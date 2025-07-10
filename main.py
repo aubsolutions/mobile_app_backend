@@ -8,7 +8,11 @@ from routes import invoice
 
 
 
-app = FastAPI()
+app = FastAPI(
+    title="ENOTE Backend",
+    openapi_url="/openapi.json",
+    docs_url="/docs",
+)
 # Подключение роутов
 app.include_router(invoice.router)
 
