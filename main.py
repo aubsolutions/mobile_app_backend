@@ -5,13 +5,12 @@ from pydantic import BaseModel
 from database import engine
 from models import Base
 from routes import invoice
+from fastapi.responses import JSONResponse
 
 
 
 app = FastAPI(
-    title="ENOTE Backend",
-    openapi_url="/openapi.json",
-    docs_url="/docs",
+    default_response_class=JSONResponse
 )
 # Подключение роутов
 app.include_router(invoice.router)

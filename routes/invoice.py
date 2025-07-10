@@ -38,6 +38,8 @@ class InvoiceCreate(BaseModel):
 # ----------------------
 @router.post("/invoices/")
 def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
+    print("🔥 Получена накладная:", invoice.dict())
+def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
     db_invoice = Invoice(
         client=invoice.client,
         status=invoice.status,
