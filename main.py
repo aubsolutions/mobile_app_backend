@@ -7,11 +7,11 @@ from models import Base
 from routes import invoice
 from fastapi.responses import JSONResponse
 
+class UTF8JSONResponse(JSONResponse):
+    media_type = "application/json; charset=utf-8"
 
+app = FastAPI(default_response_class=UTF8JSONResponse)
 
-app = FastAPI(
-    default_response_class=JSONResponse
-)
 # Подключение роутов
 app.include_router(invoice.router)
 

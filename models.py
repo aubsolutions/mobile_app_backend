@@ -16,6 +16,9 @@ class Invoice(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
+    client_id = Column(Integer, nullable=False)  # Уникальный ID клиента
+    invoice_number = Column(String, unique=True, index=True)  # Номер вида №0001/2025/2
+
 
 class Item(Base):
     __tablename__ = "items"

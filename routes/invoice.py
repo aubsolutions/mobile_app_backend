@@ -5,6 +5,15 @@ from models import Invoice, Item
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from sqlalchemy import func
+
+def generate_invoice_number(db, client_id: int):
+    year = datetime.now().year
+    count = db.query(func.count()).select_from(Invoice).filter(
+        Invoice.client_id == client_id,
+        func.extract('year', Invoice.created_at) == year
+    ).scalar() or 0
+    return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
 
 router = APIRouter()
 
@@ -29,6 +38,7 @@ class ItemCreate(BaseModel):
 
 class InvoiceCreate(BaseModel):
     client: str
+    client_id: int
     status: str
     paid_amount: Optional[int] = 0
     items: List[ItemCreate]
@@ -39,8 +49,12 @@ class InvoiceCreate(BaseModel):
 @router.post("/invoices/")
 
 def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
+    invoice_number = generate_invoice_number(db, invoice.client_id)
+
     db_invoice = Invoice(
         client=invoice.client,
+        client_id=invoice.client_id,
+        invoice_number=invoice_number,
         status=invoice.status,
         paid_amount=invoice.paid_amount,
         created_at=datetime.now()
@@ -59,7 +73,11 @@ def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
         db.add(db_item)
 
     db.commit()
-    return {"message": "Invoice created", "invoice_id": db_invoice.id}
+    return {
+        "message": "Invoice created",
+        "invoice_id": db_invoice.id,
+        "invoice_number": db_invoice.invoice_number
+    }
 
 # ----------------------
 # GET: список накладных
@@ -74,7 +92,8 @@ def get_invoices(db: Session = Depends(get_db)):
             "client": inv.client,
             "status": inv.status,
             "paid_amount": inv.paid_amount,
-            "created_at": inv.created_at,
+            "created_at": inv.created_at.isoformat(),
+            "invoice_number": inv.invoice_number,
             "items": [{"name": item.name, "quantity": item.quantity, "price": item.price}
                       for item in inv.items]
         })
