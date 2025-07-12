@@ -1,19 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
+from sqlalchemy import func
 from database import SessionLocal
-from models import Invoice, Item
+from models import Invoice, Item, Client
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-from sqlalchemy import func
-
-def generate_invoice_number(db, client_id: int):
-    year = datetime.now().year
-    count = db.query(func.count()).select_from(Invoice).filter(
-        Invoice.client_id == client_id,
-        func.extract('year', Invoice.created_at) == year
-    ).scalar() or 0
-    return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
 
 router = APIRouter()
 
@@ -38,22 +30,44 @@ class ItemCreate(BaseModel):
 
 class InvoiceCreate(BaseModel):
     client: str
-    client_id: int
+    phone: str  # ← добавляем номер телефона
     status: str
     paid_amount: Optional[int] = 0
     items: List[ItemCreate]
 
 # ----------------------
+# Генерация номера накладной
+# ----------------------
+def generate_invoice_number(db, client_id: int):
+    year = datetime.now().year
+    count = db.query(func.count()).select_from(Invoice).filter(
+        Invoice.client_id == client_id,
+        func.extract('year', Invoice.created_at) == year
+    ).scalar() or 0
+    return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
+
+# ----------------------
 # POST: создать накладную
 # ----------------------
 @router.post("/invoices/")
-
 def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
-    invoice_number = generate_invoice_number(db, invoice.client_id)
+    # 1. Найти клиента по номеру телефона
+    client = db.query(Client).filter_by(phone=invoice.phone).first()
 
+    # 2. Если клиента нет — создать
+    if not client:
+        client = Client(name=invoice.client, phone=invoice.phone)
+        db.add(client)
+        db.commit()
+        db.refresh(client)
+
+    # 3. Сгенерировать номер накладной
+    invoice_number = generate_invoice_number(db, client.id)
+
+    # 4. Создать накладную
     db_invoice = Invoice(
         client=invoice.client,
-        client_id=invoice.client_id,
+        client_id=client.id,
         invoice_number=invoice_number,
         status=invoice.status,
         paid_amount=invoice.paid_amount,
@@ -63,6 +77,7 @@ def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(db_invoice)
 
+    # 5. Добавить товары
     for item in invoice.items:
         db_item = Item(
             invoice_id=db_invoice.id,
@@ -90,6 +105,7 @@ def get_invoices(db: Session = Depends(get_db)):
         result.append({
             "id": inv.id,
             "client": inv.client,
+            "phone": inv.client_rel.phone if inv.client_rel else None,
             "status": inv.status,
             "paid_amount": inv.paid_amount,
             "created_at": inv.created_at.isoformat(),
