@@ -41,3 +41,19 @@ class Client(Base):
     phone = Column(String, nullable=False, unique=True)
 
     invoices = relationship("Invoice", back_populates="client_rel")
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String, nullable=False)
+    company = Column(String, nullable=True)
+    email = Column(String, unique=True, nullable=False)
+    phone = Column(String, unique=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    plan = Column(String, default="free")
+    plan_expires = Column(DateTime, nullable=True)
+    payment_status = Column(String, default="нет данных")

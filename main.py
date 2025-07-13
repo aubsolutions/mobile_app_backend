@@ -1,33 +1,36 @@
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from database import engine
 from models import Base
-from routes import invoice
-from fastapi.responses import JSONResponse
+from routes import invoice, auth
 
+# 👇 Кастомный JSON-ответ с поддержкой кириллицы
 class UTF8JSONResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 
+# 👇 Инициализация приложения
 app = FastAPI(default_response_class=UTF8JSONResponse)
 
-# Подключение роутов
-app.include_router(invoice.router)
+# 👇 Создание таблиц в базе (один раз при старте)
+Base.metadata.create_all(bind=engine)
 
-# CORS middleware (оставляем один раз!)
+# 👇 Подключение CORS (один раз!)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ на проде указать конкретный домен
+    allow_origins=["*"],  # ⚠️ На проде укажи домен
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Создание таблиц при старте
-Base.metadata.create_all(bind=engine)
+# 👇 Подключение роутов
+app.include_router(invoice.router)
+app.include_router(auth.router)
 
-# Роут логина
+# 👇 Заглушка логина (временно)
 class LoginRequest(BaseModel):
     phone: str
     password: str
@@ -39,8 +42,7 @@ def login(data: LoginRequest):
         return {"token": "fake-jwt-token"}
     raise HTTPException(status_code=401, detail="Invalid credentials")
 
+# 👇 Пинг для проверки здоровья
 @app.get("/")
 def health():
     return {"status": "ok"}
-
-
