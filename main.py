@@ -1,26 +1,28 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
+from passlib.context import CryptContext
 
-from database import engine
-from models import Base
+from database import engine, get_db
+from models import Base, User
 from routes import invoice, auth
 
 # 👇 Кастомный JSON-ответ с поддержкой кириллицы
 class UTF8JSONResponse(JSONResponse):
     media_type = "application/json; charset=utf-8"
 
-# 👇 Инициализация приложения
+# 👇 Инициализация FastAPI
 app = FastAPI(default_response_class=UTF8JSONResponse)
 
-# 👇 Создание таблиц в базе (один раз при старте)
+# 👇 Создание таблиц
 Base.metadata.create_all(bind=engine)
 
-# 👇 Подключение CORS (один раз!)
+# 👇 CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ На проде укажи домен
+    allow_origins=["*"],  # ⚠️ На проде — укажи домен
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -30,19 +32,30 @@ app.add_middleware(
 app.include_router(invoice.router)
 app.include_router(auth.router)
 
-# 👇 Заглушка логина (временно)
+# 👉 Хэширование паролей
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+# 👇 Модель логина
 class LoginRequest(BaseModel):
     phone: str
     password: str
 
+# 👇 Реальный логин
 @app.post("/login")
-def login(data: LoginRequest):
+def login(data: LoginRequest, db: Session = Depends(get_db)):
     print(f"🔥 Получен запрос на логин: phone={data.phone}, password={data.password}")
-    if data.phone == "77001234567" and data.password == "qwerty":
-        return {"token": "fake-jwt-token"}
-    raise HTTPException(status_code=401, detail="Invalid credentials")
 
-# 👇 Пинг для проверки здоровья
+    user = db.query(User).filter(User.phone == data.phone).first()
+    if not user:
+        raise HTTPException(status_code=401, detail="Пользователь не найден")
+
+    if not pwd_context.verify(data.password, user.password_hash):
+        raise HTTPException(status_code=401, detail="Неверный пароль")
+
+    # ✅ Пока возвращаем заглушку токена
+    return {"token": "fake-jwt-token"}
+
+# 👇 Проверка, что всё живо
 @app.get("/")
 def health():
     return {"status": "ok"}
