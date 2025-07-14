@@ -1,3 +1,4 @@
+# ✅ models.py
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
@@ -16,9 +17,11 @@ class Invoice(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     invoice_number = Column(String, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 👈 Привязка к пользователю
 
     client_rel = relationship("Client", back_populates="invoices")
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
+    user = relationship("User", back_populates="invoices")
 
 
 class Item(Base):
@@ -53,7 +56,8 @@ class User(Base):
     phone = Column(String, unique=True, nullable=False)
     password_hash = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
-
     plan = Column(String, default="free")
     plan_expires = Column(DateTime, nullable=True)
     payment_status = Column(String, default="нет данных")
+
+    invoices = relationship("Invoice", back_populates="user")

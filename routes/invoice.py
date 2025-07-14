@@ -1,11 +1,12 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal
-from models import Invoice, Item, Client
+from models import Invoice, Item, Client, User
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
+from auth import get_current_user
 
 router = APIRouter()
 
@@ -22,7 +23,6 @@ def get_db():
 # ----------------------
 # Pydantic-схемы
 # ----------------------
-
 class ItemCreate(BaseModel):
     name: str
     quantity: int
@@ -30,7 +30,7 @@ class ItemCreate(BaseModel):
 
 class InvoiceCreate(BaseModel):
     client: str
-    phone: str  # ← добавляем номер телефона
+    phone: str
     status: str
     paid_amount: Optional[int] = 0
     items: List[ItemCreate]
@@ -50,7 +50,11 @@ def generate_invoice_number(db, client_id: int):
 # POST: создать накладную
 # ----------------------
 @router.post("/invoices/")
-def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
+def create_invoice(
+    invoice: InvoiceCreate,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
     # 1. Найти клиента по номеру телефона
     client = db.query(Client).filter_by(phone=invoice.phone).first()
 
@@ -71,7 +75,8 @@ def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
         invoice_number=invoice_number,
         status=invoice.status,
         paid_amount=invoice.paid_amount,
-        created_at=datetime.now()
+        created_at=datetime.now(),
+        user_id=current_user.id,  # 👈 важное изменение
     )
     db.add(db_invoice)
     db.commit()
@@ -95,11 +100,14 @@ def create_invoice(invoice: InvoiceCreate, db: Session = Depends(get_db)):
     }
 
 # ----------------------
-# GET: список накладных
+# GET: список накладных (ТОЛЬКО пользователя)
 # ----------------------
 @router.get("/invoices/")
-def get_invoices(db: Session = Depends(get_db)):
-    invoices = db.query(Invoice).all()
+def get_invoices(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    invoices = db.query(Invoice).filter_by(user_id=current_user.id).all()
     result = []
     for inv in invoices:
         result.append({
