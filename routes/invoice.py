@@ -6,7 +6,7 @@ from models import Invoice, Item, Client, User
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-from auth import get_current_user
+from routes.auth import get_current_user
 
 router = APIRouter()
 
