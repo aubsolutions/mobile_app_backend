@@ -1,6 +1,7 @@
 from fastapi import FastAPI, HTTPException, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from starlette.responses import JSONResponse as StarletteJSONResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from passlib.context import CryptContext
@@ -10,7 +11,7 @@ from models import Base, User
 from routes import invoice, auth
 
 # 👇 Кастомный JSON-ответ с поддержкой кириллицы
-class UTF8JSONResponse(JSONResponse):
+class UTF8JSONResponse(StarletteJSONResponse):
     media_type = "application/json; charset=utf-8"
 
 # 👇 Инициализация FastAPI
