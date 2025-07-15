@@ -17,6 +17,14 @@ class UTF8JSONResponse(StarletteJSONResponse):
 # 👇 Инициализация FastAPI
 app = FastAPI(default_response_class=UTF8JSONResponse)
 
+@app.exception_handler(HTTPException)
+async def custom_http_exception_handler(request: Request, exc: HTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"detail": str(exc.detail)},
+        media_type="application/json; charset=utf-8",
+    )
+
 # 👇 Создание таблиц
 Base.metadata.create_all(bind=engine)
 
