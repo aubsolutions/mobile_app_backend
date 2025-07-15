@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import JSONResponse as StarletteJSONResponse
@@ -17,6 +17,7 @@ class UTF8JSONResponse(StarletteJSONResponse):
 # 👇 Инициализация FastAPI
 app = FastAPI(default_response_class=UTF8JSONResponse)
 
+# 👇 Глобальный обработчик ошибок — чтобы не было кракозябр в ответах
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -28,10 +29,10 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 # 👇 Создание таблиц
 Base.metadata.create_all(bind=engine)
 
-# 👇 CORS
+# 👇 CORS (разрешить доступ отовсюду)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ На проде — укажи домен
+    allow_origins=["*"],  # ⚠️ Укажи домен на проде
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -41,7 +42,7 @@ app.add_middleware(
 app.include_router(invoice.router)
 app.include_router(auth.router)
 
-# 👉 Хэширование паролей
+# 👇 Хэширование паролей
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 👇 Модель логина
