@@ -136,6 +136,7 @@ def update_user_profile(
     if update_data.email is not None:
         current_user.email = update_data.email
 
+
     db.commit()
     db.refresh(current_user)
     return {"message": "Профиль обновлён"}
