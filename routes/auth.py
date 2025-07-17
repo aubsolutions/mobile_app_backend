@@ -13,7 +13,7 @@ router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 # 🔐 JWT настройки
-SECRET_KEY = "super-secret-key"  # ⚠️ замени на .env в проде
+SECRET_KEY = "super-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 день
 
@@ -30,7 +30,7 @@ def get_db():
         db.close()
 
 # ---------------------
-# Регистрация
+# Pydantic модели
 # ---------------------
 class RegisterRequest(BaseModel):
     name: str
@@ -44,6 +44,13 @@ class UpdateUserRequest(BaseModel):
     company: Optional[str]
     email: Optional[EmailStr]
 
+class LoginRequest(BaseModel):
+    phone: str
+    password: str
+
+# ---------------------
+# Регистрация
+# ---------------------
 @router.post("/register/")
 def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.phone == data.phone).first()
@@ -68,10 +75,6 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
 # ---------------------
 # Логин
 # ---------------------
-class LoginRequest(BaseModel):
-    phone: str
-    password: str
-
 @router.post("/login")
 def login(data: LoginRequest, db: Session = Depends(get_db)):
     user = db.query(User).filter(User.phone == data.phone).first()
@@ -104,6 +107,9 @@ def get_current_user(
 
     return user
 
+# ---------------------
+# Получение профиля
+# ---------------------
 @router.get("/me")
 def get_me(current_user: User = Depends(get_current_user)):
     return {
@@ -114,7 +120,10 @@ def get_me(current_user: User = Depends(get_current_user)):
         "email": current_user.email,
     }
 
-@router.put("/me/update")
+# ---------------------
+# Обновление профиля
+# ---------------------
+@router.put("/me")
 def update_user_profile(
     update_data: UpdateUserRequest,
     db: Session = Depends(get_db),
