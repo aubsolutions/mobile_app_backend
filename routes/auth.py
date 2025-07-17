@@ -39,6 +39,11 @@ class RegisterRequest(BaseModel):
     email: EmailStr
     password: str
 
+class UpdateUserRequest(BaseModel):
+    name: Optional[str]
+    company: Optional[str]
+    email: Optional[EmailStr]
+
 @router.post("/register/")
 def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     existing_user = db.query(User).filter(User.phone == data.phone).first()
@@ -108,3 +113,20 @@ def get_me(current_user: User = Depends(get_current_user)):
         "phone": current_user.phone,
         "email": current_user.email,
     }
+
+@router.put("/me/update")
+def update_user_profile(
+    update_data: UpdateUserRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    if update_data.name is not None:
+        current_user.name = update_data.name
+    if update_data.company is not None:
+        current_user.company = update_data.company
+    if update_data.email is not None:
+        current_user.email = update_data.email
+
+    db.commit()
+    db.refresh(current_user)
+    return {"message": "Профиль обновлён"}
