@@ -7,6 +7,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
 from routes.auth import get_current_user
+from fastapi.responses import HTMLResponse  # 👈 важно
 
 router = APIRouter()
 
@@ -76,7 +77,7 @@ def create_invoice(
         status=invoice.status,
         paid_amount=invoice.paid_amount,
         created_at=datetime.now(),
-        user_id=current_user.id,  # 👈 важное изменение
+        user_id=current_user.id,
     )
     db.add(db_invoice)
     db.commit()
@@ -122,3 +123,39 @@ def get_invoices(
                       for item in inv.items]
         })
     return result
+
+# ----------------------
+# Публичная страница накладной (QR-код)
+# ----------------------
+@router.get("/invoice/{invoice_id}", response_class=HTMLResponse)
+def public_invoice_page(invoice_id: int):
+    db = SessionLocal()
+    invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+    db.close()
+    if not invoice:
+        raise HTTPException(status_code=404, detail="Invoice not found")
+    supplier = getattr(invoice, "supplier_name", None)
+    # Фолбэк на client, если supplier_name нет:
+    if not supplier:
+        supplier = getattr(invoice, "client", "—")
+    number = getattr(invoice, "invoice_number", invoice.id)
+    return f"""
+    <html>
+    <head>
+      <title>Накладная #{number}</title>
+      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <style>
+        body {{ font-family: Arial, sans-serif; max-width: 400px; margin: 50px auto; background: #f7f7f7; }}
+        .card {{ background: #fff; padding: 24px; border-radius: 10px; box-shadow: 0 4px 16px #0001; }}
+        .title {{ font-size: 22px; font-weight: bold; margin-bottom: 8px; }}
+        .subtitle {{ color: #888; margin-bottom: 12px; }}
+      </style>
+    </head>
+    <body>
+      <div class="card">
+        <div class="title">Поставщик: {supplier}</div>
+        <div class="subtitle">Накладная №{number}</div>
+      </div>
+    </body>
+    </html>
+    """
