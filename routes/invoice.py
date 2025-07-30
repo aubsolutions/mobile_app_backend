@@ -36,6 +36,9 @@ class InvoiceCreate(BaseModel):
     paid_amount: Optional[int] = 0
     items: List[ItemCreate]
 
+class FeedbackCreate(BaseModel):
+    message: str
+    name: Optional[str] = None
 # ----------------------
 # Генерация номера накладной
 # ----------------------
@@ -159,3 +162,4 @@ def public_invoice_page(invoice_id: int):
     </body>
     </html>
     """
+

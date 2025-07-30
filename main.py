@@ -2,7 +2,7 @@ from fastapi import FastAPI, HTTPException, Depends, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.responses import JSONResponse as StarletteJSONResponse
-
+from routes import feedback
 from database import engine
 from models import Base
 from routes import invoice, auth
@@ -38,6 +38,7 @@ app.add_middleware(
 # 👇 Подключение роутов
 app.include_router(invoice.router)
 app.include_router(auth.router)
+app.include_router(feedback.router)
 
 # 👇 Проверка, что всё живо
 @app.get("/")

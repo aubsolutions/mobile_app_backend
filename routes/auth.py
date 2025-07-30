@@ -38,6 +38,7 @@ class RegisterRequest(BaseModel):
     phone: str
     email: EmailStr
     password: str
+    terms_accepted_at: datetime  # 👈 ДОБАВЬ ЭТО ПОЛЕ
 
 class UpdateUserRequest(BaseModel):
     name: Optional[str]
@@ -64,7 +65,8 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
         company=data.company,
         phone=data.phone,
         email=data.email,
-        password_hash=hashed_password
+        password_hash=hashed_password,
+        terms_accepted_at=data.terms_accepted_at  # 👈 Фиксируем дату согласия
     )
     db.add(user)
     db.commit()
@@ -118,6 +120,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         "company": current_user.company,
         "phone": current_user.phone,
         "email": current_user.email,
+        "terms_accepted_at": current_user.terms_accepted_at,  # 👈 Можно вернуть на фронт для контроля
     }
 
 # ---------------------
@@ -135,7 +138,6 @@ def update_user_profile(
         current_user.company = update_data.company
     if update_data.email is not None:
         current_user.email = update_data.email
-
 
     db.commit()
     db.refresh(current_user)

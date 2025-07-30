@@ -59,5 +59,17 @@ class User(Base):
     plan = Column(String, default="free")
     plan_expires = Column(DateTime, nullable=True)
     payment_status = Column(String, default="нет данных")
-
+    terms_accepted_at = Column(DateTime, nullable=True)
     invoices = relationship("Invoice", back_populates="user")
+
+class Feedback(Base):
+    __tablename__ = "feedbacks"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # опционально, если будет анонимный отзыв
+    name = Column(String, nullable=True)      # имя отправителя (если надо)
+    message = Column(String, nullable=False)  # текст отзыва
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    user = relationship("User", backref="feedbacks")
+
