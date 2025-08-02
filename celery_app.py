@@ -19,7 +19,7 @@ celery.autodiscover_tasks(['tasks'])
 celery.conf.beat_schedule = {
     'check_subscriptions_daily': {
         'task': 'tasks.check_subscriptions',
-        'schedule': timedelta(hours=24),
+        'schedule': timedelta(seconds=60),
     },
 }
 celery.conf.timezone = 'UTC'
