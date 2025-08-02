@@ -1,4 +1,3 @@
-# ✅ models.py
 from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
@@ -17,12 +16,11 @@ class Invoice(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     client_id = Column(Integer, ForeignKey("clients.id"), nullable=False)
     invoice_number = Column(String, unique=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)  # 👈 Привязка к пользователю
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
     client_rel = relationship("Client", back_populates="invoices")
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
     user = relationship("User", back_populates="invoices")
-
 
 class Item(Base):
     __tablename__ = "items"
@@ -35,7 +33,6 @@ class Item(Base):
 
     invoice = relationship("Invoice", back_populates="items")
 
-
 class Client(Base):
     __tablename__ = "clients"
 
@@ -44,7 +41,6 @@ class Client(Base):
     phone = Column(String, nullable=False, unique=True)
 
     invoices = relationship("Invoice", back_populates="client_rel")
-
 
 class User(Base):
     __tablename__ = "users"
@@ -60,16 +56,27 @@ class User(Base):
     plan_expires = Column(DateTime, nullable=True)
     payment_status = Column(String, default="нет данных")
     terms_accepted_at = Column(DateTime, nullable=True)
+
     invoices = relationship("Invoice", back_populates="user")
+    subscription = relationship("Subscription", back_populates="user", uselist=False)
 
 class Feedback(Base):
     __tablename__ = "feedbacks"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)  # опционально, если будет анонимный отзыв
-    name = Column(String, nullable=True)      # имя отправителя (если надо)
-    message = Column(String, nullable=False)  # текст отзыва
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=True)
+    name = Column(String, nullable=True)
+    message = Column(String, nullable=False)
     created_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", backref="feedbacks")
 
+class Subscription(Base):
+    __tablename__ = "subscriptions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"))
+    type = Column(String, default="free")
+    start_date = Column(DateTime, default=datetime.utcnow)
+    end_date = Column(DateTime, nullable=True)
+    user = relationship("User", back_populates="subscription")

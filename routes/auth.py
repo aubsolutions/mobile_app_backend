@@ -8,6 +8,7 @@ from datetime import datetime, timedelta
 from fastapi.security import OAuth2PasswordBearer
 from database import SessionLocal
 from models import User
+from models import User, Subscription
 
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
@@ -72,7 +73,20 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    return {"message": "Пользователь успешно зарегистрирован", "user_id": user.id}
+    subscription = Subscription(
+        user_id=user.id,
+        type="free",
+        start_date=datetime.utcnow(),
+        end_date=datetime.utcnow() + timedelta(days=14)  #14 дней бесплатно
+    )
+    db.add(subscription)
+    db.commit()
+    db.refresh(subscription)
+    return {
+    "message": "Пользователь успешно зарегистрирован",
+    "user_id": user.id,
+    "subscription_end": subscription.end_date
+}
 
 # ---------------------
 # Логин
@@ -113,7 +127,8 @@ def get_current_user(
 # Получение профиля
 # ---------------------
 @router.get("/me")
-def get_me(current_user: User = Depends(get_current_user)):
+def get_me(current_user: User = Depends(get_current_user), db: Session = Depends(get_db)):
+    subscription = db.query(Subscription).filter(Subscription.user_id == current_user.id).first()
     return {
         "id": current_user.id,
         "name": current_user.name,
@@ -121,6 +136,7 @@ def get_me(current_user: User = Depends(get_current_user)):
         "phone": current_user.phone,
         "email": current_user.email,
         "terms_accepted_at": current_user.terms_accepted_at,  # 👈 Можно вернуть на фронт для контроля
+         "subscription_end": subscription.end_date if subscription else None
     }
 
 # ---------------------
