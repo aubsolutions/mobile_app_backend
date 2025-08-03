@@ -6,6 +6,8 @@ from routes import feedback
 from database import engine
 from models import Base
 from routes import invoice, auth
+from routes import employees
+from routes.employees import router as employees_router
 
 # 👇 Кастомный JSON-ответ с поддержкой кириллицы
 class UTF8JSONResponse(StarletteJSONResponse):
@@ -39,8 +41,10 @@ app.add_middleware(
 app.include_router(invoice.router)
 app.include_router(auth.router)
 app.include_router(feedback.router)
+app.include_router(employees.router)
 
 # 👇 Проверка, что всё живо
 @app.get("/")
 def health():
     return {"status": "ok"}
+

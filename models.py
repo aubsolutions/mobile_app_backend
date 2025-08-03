@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -59,6 +59,7 @@ class User(Base):
 
     invoices = relationship("Invoice", back_populates="user")
     subscription = relationship("Subscription", back_populates="user", uselist=False)
+    employees = relationship("Employee", back_populates="owner", cascade="all, delete-orphan")
 
 class Feedback(Base):
     __tablename__ = "feedbacks"
@@ -80,3 +81,16 @@ class Subscription(Base):
     start_date = Column(DateTime, default=datetime.utcnow)
     end_date = Column(DateTime, nullable=True)
     user = relationship("User", back_populates="subscription")
+
+class Employee(Base):
+    __tablename__ = "employees"
+
+    id = Column(Integer, primary_key=True, index=True)
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    name = Column(String, nullable=False)
+    phone = Column(String, nullable=False, unique=True)
+    password_hash = Column(String, nullable=False)
+    is_blocked = Column(Boolean, default=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User", back_populates="employees")
