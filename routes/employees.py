@@ -8,7 +8,7 @@ from typing import List
 
 from database import get_db
 from models import Employee, User
-from auth import get_current_user, get_current_employee
+from routes.auth import get_current_user, get_current_employee  # <-- исправлено
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter(prefix="/employees", tags=["employees"])
