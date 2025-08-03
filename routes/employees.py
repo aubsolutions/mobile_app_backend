@@ -8,7 +8,7 @@ from typing import List
 
 from database import get_db
 from models import Employee, User
-from routes.auth import get_current_user  # ← здесь поправили импорт
+from auth import get_current_user, get_current_employee
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -37,7 +37,7 @@ class EmployeeUpdatePassword(BaseModel):
 @router.get("/", response_model=List[EmployeeOut])
 def list_employees(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     return db.query(Employee).filter(Employee.owner_id == current_user.id).all()
 
@@ -46,7 +46,7 @@ def list_employees(
 def create_employee(
     data: EmployeeCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     if db.query(Employee).filter(Employee.phone == data.phone).first():
         raise HTTPException(status_code=400, detail="Сотрудник с таким телефоном уже существует")
@@ -67,7 +67,7 @@ def update_phone(
     emp_id: int,
     data: EmployeeUpdatePhone,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -83,7 +83,7 @@ def update_password(
     emp_id: int,
     data: EmployeeUpdatePassword,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -96,7 +96,7 @@ def update_password(
 def block_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -109,7 +109,7 @@ def block_employee(
 def unblock_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -122,7 +122,7 @@ def unblock_employee(
 def delete_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(get_current_employee),
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:

@@ -10,6 +10,7 @@ from database import SessionLocal
 from models import User
 from models import User, Subscription
 
+
 router = APIRouter()
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
@@ -47,6 +48,10 @@ class UpdateUserRequest(BaseModel):
     email: Optional[EmailStr]
 
 class LoginRequest(BaseModel):
+    phone: str
+    password: str
+
+class EmployeeLoginRequest(BaseModel):
     phone: str
     password: str
 
@@ -105,6 +110,24 @@ def login(data: LoginRequest, db: Session = Depends(get_db)):
     return {"access_token": token, "token_type": "bearer"}
 
 # ---------------------
+# авторизация сотрудника
+# ---------------------
+
+@router.post("/employee/login")
+def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    if not emp or not pwd_context.verify(data.password, emp.password_hash):
+        raise HTTPException(status_code=401, detail="Неверный номер или пароль")
+    if emp.is_blocked:
+        raise HTTPException(status_code=403, detail="Ваша учетная запись заблокирована")
+    token_data = {
+        "sub": f"emp:{emp.id}",
+        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+    }
+    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    return {"access_token": token, "token_type": "bearer"}
+
+# ---------------------
 # Получение текущего пользователя
 # ---------------------
 def get_current_user(
@@ -122,6 +145,31 @@ def get_current_user(
         raise HTTPException(status_code=404, detail="Пользователь не найден")
 
     return user
+
+# ---------------------
+# Получение текущего сотрудника
+# ---------------------
+
+def get_current_employee(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
+) -> Employee:
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub", "")
+        # ожидаем формат "emp:<id>"
+        if not sub.startswith("emp:"):
+            raise ValueError()
+        emp_id = int(sub.split(":", 1)[1])
+    except Exception:
+        raise HTTPException(status_code=401, detail="Невалидный токен сотрудника")
+
+    emp = db.query(Employee).filter(Employee.id == emp_id).first()
+    if not emp:
+        raise HTTPException(status_code=404, detail="Сотрудник не найден")
+    if emp.is_blocked:
+        raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
+    return emp
 
 # ---------------------
 # Получение профиля
@@ -158,3 +206,14 @@ def update_user_profile(
     db.commit()
     db.refresh(current_user)
     return {"message": "Профиль обновлён"}
+
+@router.post("/employee/login")
+def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
+    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    if not emp or not pwd_context.verify(data.password, emp.password_hash):
+        raise HTTPException(401, "Неверный номер или пароль")
+    if emp.is_blocked:
+        raise HTTPException(403, "Ваша учетная запись заблокирована")
+    token_data = {"sub": f"emp:{emp.id}", "exp": datetime.utcnow() + timedelta(days=1)}
+    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+    return {"access_token": token, "token_type": "bearer"}
