@@ -8,7 +8,7 @@ from typing import List
 
 from database import get_db
 from models import Employee, User
-from routes.auth import get_current_user, get_current_employee  # <-- исправлено
+from routes.auth import get_current_user  # <-- теперь только get_current_user
 
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 router = APIRouter(prefix="/employees", tags=["employees"])
@@ -33,20 +33,20 @@ class EmployeeUpdatePhone(BaseModel):
 class EmployeeUpdatePassword(BaseModel):
     password: str
 
-# GET /employees
+# GET /employees — возвращаем сотрудник-список для текущего User
 @router.get("/", response_model=List[EmployeeOut])
 def list_employees(
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- здесь
 ):
     return db.query(Employee).filter(Employee.owner_id == current_user.id).all()
 
-# POST /employees
+# POST /employees — создаём нового сотрудника для текущего User
 @router.post("/", response_model=EmployeeOut, status_code=status.HTTP_201_CREATED)
 def create_employee(
     data: EmployeeCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     if db.query(Employee).filter(Employee.phone == data.phone).first():
         raise HTTPException(status_code=400, detail="Сотрудник с таким телефоном уже существует")
@@ -67,7 +67,7 @@ def update_phone(
     emp_id: int,
     data: EmployeeUpdatePhone,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -83,7 +83,7 @@ def update_password(
     emp_id: int,
     data: EmployeeUpdatePassword,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -96,7 +96,7 @@ def update_password(
 def block_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -109,7 +109,7 @@ def block_employee(
 def unblock_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
@@ -122,7 +122,7 @@ def unblock_employee(
 def delete_employee(
     emp_id: int,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_employee),
+    current_user: User = Depends(get_current_user),  # <-- и здесь
 ):
     emp = db.query(Employee).filter_by(id=emp_id, owner_id=current_user.id).first()
     if not emp:
