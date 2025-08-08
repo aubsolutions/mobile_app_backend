@@ -1,13 +1,14 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+# routes/invoice.py
+from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal
-from models import Invoice, Item, Client, User
+from models import Invoice, Item, Client, User, Employee
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
-from routes.auth import get_current_user
-from fastapi.responses import HTMLResponse  # 👈 важно
+from fastapi.responses import HTMLResponse
+from routes.auth import get_actor  # универсальный актёр (владелец/сотрудник)
 
 router = APIRouter()
 
@@ -39,6 +40,7 @@ class InvoiceCreate(BaseModel):
 class FeedbackCreate(BaseModel):
     message: str
     name: Optional[str] = None
+
 # ----------------------
 # Генерация номера накладной
 # ----------------------
@@ -51,26 +53,46 @@ def generate_invoice_number(db, client_id: int):
     return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
 
 # ----------------------
-# POST: создать накладную
+# POST: создать накладную (владелец или сотрудник)
 # ----------------------
 @router.post("/invoices/")
 def create_invoice(
     invoice: InvoiceCreate,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
+    actor = Depends(get_actor),
 ):
-    # 1. Найти клиента по номеру телефона
-    client = db.query(Client).filter_by(phone=invoice.phone).first()
+    """
+    Если создаёт владелец:
+      - user_id = id владельца
+      - seller_employee_id = None
+      - seller_name = имя владельца
 
-    # 2. Если клиента нет — создать
+    Если создаёт сотрудник:
+      - user_id = owner_id сотрудника (накладная принадлежит владельцу)
+      - seller_employee_id = id сотрудника
+      - seller_name = имя сотрудника
+    """
+    # 1. Найти/создать клиента
+    client = db.query(Client).filter_by(phone=invoice.phone).first()
     if not client:
         client = Client(name=invoice.client, phone=invoice.phone)
         db.add(client)
         db.commit()
         db.refresh(client)
 
-    # 3. Сгенерировать номер накладной
+    # 2. Сгенерировать номер накладной
     invoice_number = generate_invoice_number(db, client.id)
+
+    # 3. Определить владельца и продавца
+    if actor["role"] == "user":
+        owner_id = actor["user"].id
+        seller_employee_id = None
+        seller_name = actor["user"].name
+    else:
+        emp: Employee = actor["employee"]
+        owner_id = emp.owner_id
+        seller_employee_id = emp.id
+        seller_name = emp.name
 
     # 4. Создать накладную
     db_invoice = Invoice(
@@ -78,9 +100,12 @@ def create_invoice(
         client_id=client.id,
         invoice_number=invoice_number,
         status=invoice.status,
-        paid_amount=invoice.paid_amount,
+        paid_amount=invoice.paid_amount or 0,
         created_at=datetime.now(),
-        user_id=current_user.id,
+        user_id=owner_id,
+        # новые поля продавца:
+        seller_employee_id=seller_employee_id,
+        seller_name=seller_name,
     )
     db.add(db_invoice)
     db.commit()
@@ -97,21 +122,34 @@ def create_invoice(
         db.add(db_item)
 
     db.commit()
+
+    # 6. Ответ (как раньше, но с seller_*)
     return {
         "message": "Invoice created",
         "invoice_id": db_invoice.id,
-        "invoice_number": db_invoice.invoice_number
+        "invoice_number": db_invoice.invoice_number,
+        "seller_employee_id": db_invoice.seller_employee_id,
+        "seller_name": db_invoice.seller_name,
     }
 
 # ----------------------
-# GET: список накладных (ТОЛЬКО пользователя)
+# Вспомогательная функция: список накладных
 # ----------------------
-@router.get("/invoices/")
-def get_invoices(
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_user),
-):
-    invoices = db.query(Invoice).filter_by(user_id=current_user.id).all()
+def _list_invoices(db: Session, actor, seller_employee_id: Optional[int]):
+    if actor["role"] == "user":
+        # Все накладные владельца (опционально — фильтр по конкретному сотруднику)
+        q = db.query(Invoice).filter(Invoice.user_id == actor["user"].id)
+        if seller_employee_id is not None:
+            q = q.filter(Invoice.seller_employee_id == seller_employee_id)
+        invoices = q.all()
+    else:
+        # Только накладные, выписанные этим сотрудником
+        emp: Employee = actor["employee"]
+        invoices = db.query(Invoice).filter(
+            Invoice.user_id == emp.owner_id,
+            Invoice.seller_employee_id == emp.id
+        ).all()
+
     result = []
     for inv in invoices:
         result.append({
@@ -120,12 +158,38 @@ def get_invoices(
             "phone": inv.client_rel.phone if inv.client_rel else None,
             "status": inv.status,
             "paid_amount": inv.paid_amount,
-            "created_at": inv.created_at.isoformat(),
+            "created_at": inv.created_at.isoformat() if inv.created_at else None,
             "invoice_number": inv.invoice_number,
-            "items": [{"name": item.name, "quantity": item.quantity, "price": item.price}
-                      for item in inv.items]
+            "seller_employee_id": getattr(inv, "seller_employee_id", None),
+            "seller_name": getattr(inv, "seller_name", None),
+            "items": [
+                {"name": item.name, "quantity": item.quantity, "price": item.price}
+                for item in inv.items
+            ],
         })
     return result
+
+# ----------------------
+# GET: список накладных (со слэшем)
+# ----------------------
+@router.get("/invoices/")
+def get_invoices_slash(
+    db: Session = Depends(get_db),
+    actor = Depends(get_actor),
+    seller_employee_id: Optional[int] = Query(None),
+):
+    return _list_invoices(db, actor, seller_employee_id)
+
+# ----------------------
+# GET: список накладных (без слэша) — чтобы избежать 307 редиректов
+# ----------------------
+@router.get("/invoices")
+def get_invoices_no_slash(
+    db: Session = Depends(get_db),
+    actor = Depends(get_actor),
+    seller_employee_id: Optional[int] = Query(None),
+):
+    return _list_invoices(db, actor, seller_employee_id)
 
 # ----------------------
 # Публичная страница накладной (QR-код)
@@ -137,11 +201,14 @@ def public_invoice_page(invoice_id: int):
     db.close()
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
+
+    # Показать «Поставщик»: если есть supplier_name — возьмём его, иначе client
     supplier = getattr(invoice, "supplier_name", None)
-    # Фолбэк на client, если supplier_name нет:
     if not supplier:
         supplier = getattr(invoice, "client", "—")
+
     number = getattr(invoice, "invoice_number", invoice.id)
+
     return f"""
     <html>
     <head>
@@ -162,4 +229,3 @@ def public_invoice_page(invoice_id: int):
     </body>
     </html>
     """
-

@@ -18,9 +18,16 @@ class Invoice(Base):
     invoice_number = Column(String, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
+    # 👇 Новые поля: кто оформил накладную (владелец или сотрудник)
+    seller_employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
+    seller_name = Column(String, nullable=True)
+
     client_rel = relationship("Client", back_populates="invoices")
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
     user = relationship("User", back_populates="invoices")
+
+    # не обязательно, но удобно, если где-то захочешь вытаскивать объект сотрудника
+    seller_employee = relationship("Employee", foreign_keys=[seller_employee_id])
 
 class Item(Base):
     __tablename__ = "items"

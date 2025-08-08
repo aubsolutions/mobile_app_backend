@@ -23,7 +23,6 @@ ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 день
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
-
 # ---------------------
 # Pydantic модели
 # ---------------------
@@ -35,22 +34,18 @@ class RegisterRequest(BaseModel):
     password: str
     terms_accepted_at: datetime
 
-
 class UpdateUserRequest(BaseModel):
     name: Optional[str]
     company: Optional[str]
     email: Optional[EmailStr]
 
-
 class LoginRequest(BaseModel):
     phone: str
     password: str
 
-
 class EmployeeLoginRequest(BaseModel):
     phone: str
     password: str
-
 
 # ---------------------
 # Регистрация пользователя
@@ -91,7 +86,6 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
         "subscription_end": sub.end_date
     }
 
-
 # ---------------------
 # Логин пользователя
 # ---------------------
@@ -107,7 +101,6 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
-
 
 # ---------------------
 # Логин сотрудника
@@ -126,7 +119,6 @@ def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
-
 
 # ---------------------
 # Зависимость: текущий пользователь
@@ -148,7 +140,6 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     return user
-
 
 # ---------------------
 # Зависимость: текущий сотрудник
@@ -173,43 +164,36 @@ def get_current_employee(
         raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
     return emp
 
-
-# ---------------------
-# Профиль пользователя
-# ---------------------
-@router.get("/me")
-def get_me(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+# --- Универсальный резолвер актёра по токену (владелец или сотрудник) ---
+def get_actor(
+    token: str = Depends(oauth2_scheme),
+    db: Session = Depends(get_db),
 ):
-    sub = db.query(Subscription).filter(Subscription.user_id == current_user.id).first()
-    return {
-        "id": current_user.id,
-        "name": current_user.name,
-        "company": current_user.company,
-        "phone": current_user.phone,
-        "email": current_user.email,
-        "terms_accepted_at": current_user.terms_accepted_at,
-        "subscription_end": sub.end_date if sub else None
-    }
+    """
+    Возвращает словарь:
+      - {"role": "user", "user": <User>, "employee": None}
+      - {"role": "employee", "user": None, "employee": <Employee>}
+    """
+    try:
+        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        sub = payload.get("sub", "")
 
+        # Сотрудник
+        if isinstance(sub, str) and sub.startswith("emp:"):
+            emp_id = int(sub.split(":", 1)[1])
+            emp = db.query(Employee).filter(Employee.id == emp_id).first()
+            if not emp:
+                raise HTTPException(status_code=404, detail="Сотрудник не найден")
+            if emp.is_blocked:
+                raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
+            return {"role": "employee", "employee": emp, "user": None}
 
-# ---------------------
-# Обновление профиля
-# ---------------------
-@router.put("/me")
-def update_me(
-    data: UpdateUserRequest,
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    if data.name is not None:
-        current_user.name = data.name
-    if data.company is not None:
-        current_user.company = data.company
-    if data.email is not None:
-        current_user.email = data.email
+        # Владелец
+        user_id = int(sub)
+        user = db.query(User).filter(User.id == user_id).first()
+        if not user:
+            raise HTTPException(status_code=404, detail="Пользователь не найден")
+        return {"role": "user", "employee": None, "user": user}
 
-    db.commit()
-    db.refresh(current_user)
-    return {"message": "Профиль обновлён"}
+    except Exception:
+        raise HTTPException(status_code=401, detail="Невалидный токен")
