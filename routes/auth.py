@@ -87,23 +87,37 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     }
 
 # ---------------------
-# Логин пользователя
+# Единый логин: сначала владелец, потом сотрудник
 # ---------------------
 @router.post("/login")
 def login_user(data: LoginRequest, db: Session = Depends(get_db)):
+    # 1) Пытаемся как ВЛАДЕЛЕЦ
     user = db.query(User).filter(User.phone == data.phone).first()
-    if not user or not pwd_context.verify(data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Неверный номер или пароль")
+    if user and pwd_context.verify(data.password, user.password_hash):
+        token_data = {
+            "sub": str(user.id),
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
 
-    token_data = {
-        "sub": str(user.id),
-        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    }
-    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": token, "token_type": "bearer"}
+    # 2) Пытаемся как СОТРУДНИК
+    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    if emp and pwd_context.verify(data.password, emp.password_hash):
+        if emp.is_blocked:
+            raise HTTPException(status_code=403, detail="Ваша учетная запись заблокирована")
+        token_data = {
+            "sub": f"emp:{emp.id}",
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
+
+    # 3) Не подошёл ни владелец, ни сотрудник
+    raise HTTPException(status_code=401, detail="Неверный номер или пароль")
 
 # ---------------------
-# Логин сотрудника
+# Логин сотрудника (оставляем, если нужно отдельно)
 # ---------------------
 @router.post("/employee/login")
 def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
@@ -130,7 +144,7 @@ def get_current_user(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub")
-        if sub is None or not sub.isdigit():
+        if sub is None or not str(sub).isdigit():
             raise ValueError()
         user_id = int(sub)
     except Exception:
@@ -151,7 +165,7 @@ def get_current_employee(
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub", "")
-        if not sub.startswith("emp:"):
+        if not isinstance(sub, str) or not sub.startswith("emp:"):
             raise ValueError()
         emp_id = int(sub.split(":", 1)[1])
     except Exception:
