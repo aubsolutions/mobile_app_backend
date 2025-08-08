@@ -197,3 +197,42 @@ def get_actor(
 
     except Exception:
         raise HTTPException(status_code=401, detail="Невалидный токен")
+
+# ---------------------
+# Профиль текущего пользователя (для фронта /me)
+# ---------------------
+@router.get("/me")
+def get_me(
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    sub = db.query(Subscription).filter(Subscription.user_id == current_user.id).first()
+    return {
+        "id": current_user.id,
+        "name": current_user.name,
+        "company": current_user.company,
+        "phone": current_user.phone,
+        "email": current_user.email,
+        "terms_accepted_at": current_user.terms_accepted_at,
+        "subscription_end": sub.end_date if sub else None
+    }
+
+# ---------------------
+# Обновление профиля (если нужно на экране редактирования)
+# ---------------------
+@router.put("/me")
+def update_me(
+    data: UpdateUserRequest,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    if data.name is not None:
+        current_user.name = data.name
+    if data.company is not None:
+        current_user.company = data.company
+    if data.email is not None:
+        current_user.email = data.email
+
+    db.commit()
+    db.refresh(current_user)
+    return {"message": "Профиль обновлён"}
