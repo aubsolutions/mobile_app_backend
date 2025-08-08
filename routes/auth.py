@@ -8,7 +8,7 @@ from pydantic import BaseModel, EmailStr
 from typing import Optional
 from datetime import datetime, timedelta
 
-from jose import JWTError, jwt
+from jose import jwt
 
 from database import get_db
 from models import User, Subscription, Employee
@@ -22,6 +22,22 @@ ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 день
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
+
+
+# ---------------------
+# Утилита нормализации телефона
+# Приводим к 11-значному формату под РК: 7XXXXXXXXXX (только цифры)
+# ---------------------
+def normalize_phone(phone: str) -> str:
+    digits = "".join(ch for ch in (phone or "") if ch.isdigit())
+    if len(digits) == 11 and digits.startswith("8"):
+        # 8XXXXXXXXXX -> 7XXXXXXXXXX
+        digits = "7" + digits[1:]
+    if len(digits) == 10:
+        # XXXXXXXXXX -> 7XXXXXXXXXX
+        digits = "7" + digits
+    return digits
+
 
 # ---------------------
 # Pydantic модели
@@ -47,12 +63,20 @@ class EmployeeLoginRequest(BaseModel):
     phone: str
     password: str
 
+
 # ---------------------
 # Регистрация пользователя
 # ---------------------
 @router.post("/register/")
 def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
-    existing = db.query(User).filter(User.phone == data.phone).first()
+    norm_phone = normalize_phone(data.phone)
+
+    # проверим коллизии по нормализованному телефону
+    existing = None
+    for u in db.query(User).all():
+        if normalize_phone(u.phone) == norm_phone:
+            existing = u
+            break
     if existing:
         raise HTTPException(status_code=400, detail="Пользователь с таким номером уже существует")
 
@@ -60,7 +84,7 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     user = User(
         name=data.name,
         company=data.company,
-        phone=data.phone,
+        phone=norm_phone,  # сохраняем уже нормализованный
         email=data.email,
         password_hash=hashed,
         terms_accepted_at=data.terms_accepted_at
@@ -86,13 +110,20 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
         "subscription_end": sub.end_date
     }
 
+
 # ---------------------
-# Единый логин: сначала владелец, потом сотрудник
+# Единый логин: сначала владелец, потом сотрудник (с нормализацией телефона)
 # ---------------------
 @router.post("/login")
 def login_user(data: LoginRequest, db: Session = Depends(get_db)):
-    # 1) Пытаемся как ВЛАДЕЛЕЦ
-    user = db.query(User).filter(User.phone == data.phone).first()
+    norm_phone = normalize_phone(data.phone)
+
+    # 1) Пытаемся как ВЛАДЕЛЕЦ — ищем по нормализованному совпадению
+    user = None
+    for u in db.query(User).all():
+        if normalize_phone(u.phone) == norm_phone:
+            user = u
+            break
     if user and pwd_context.verify(data.password, user.password_hash):
         token_data = {
             "sub": str(user.id),
@@ -101,8 +132,12 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         return {"access_token": token, "token_type": "bearer"}
 
-    # 2) Пытаемся как СОТРУДНИК
-    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    # 2) Пытаемся как СОТРУДНИК — также по нормализованному совпадению
+    emp = None
+    for e in db.query(Employee).all():
+        if normalize_phone(e.phone) == norm_phone:
+            emp = e
+            break
     if emp and pwd_context.verify(data.password, emp.password_hash):
         if emp.is_blocked:
             raise HTTPException(status_code=403, detail="Ваша учетная запись заблокирована")
@@ -116,12 +151,19 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     # 3) Не подошёл ни владелец, ни сотрудник
     raise HTTPException(status_code=401, detail="Неверный номер или пароль")
 
+
 # ---------------------
-# Логин сотрудника (оставляем, если нужно отдельно)
+# Логин сотрудника (опционально оставляем)
 # ---------------------
 @router.post("/employee/login")
 def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
-    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    norm_phone = normalize_phone(data.phone)
+    emp = None
+    for e in db.query(Employee).all():
+        if normalize_phone(e.phone) == norm_phone:
+            emp = e
+            break
+
     if not emp or not pwd_context.verify(data.password, emp.password_hash):
         raise HTTPException(status_code=401, detail="Неверный номер или пароль")
     if emp.is_blocked:
@@ -133,6 +175,7 @@ def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
     }
     token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
     return {"access_token": token, "token_type": "bearer"}
+
 
 # ---------------------
 # Зависимость: текущий пользователь
@@ -154,6 +197,7 @@ def get_current_user(
     if not user:
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     return user
+
 
 # ---------------------
 # Зависимость: текущий сотрудник
@@ -177,6 +221,7 @@ def get_current_employee(
     if emp.is_blocked:
         raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
     return emp
+
 
 # --- Универсальный резолвер актёра по токену (владелец или сотрудник) ---
 def get_actor(
@@ -212,6 +257,7 @@ def get_actor(
     except Exception:
         raise HTTPException(status_code=401, detail="Невалидный токен")
 
+
 # ---------------------
 # Профиль текущего пользователя (для фронта /me)
 # ---------------------
@@ -230,6 +276,7 @@ def get_me(
         "terms_accepted_at": current_user.terms_accepted_at,
         "subscription_end": sub.end_date if sub else None
     }
+
 
 # ---------------------
 # Обновление профиля (если нужно на экране редактирования)
