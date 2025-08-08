@@ -26,15 +26,12 @@ oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 # ---------------------
 # Утилита нормализации телефона
-# Приводим к 11-значному формату под РК: 7XXXXXXXXXX (только цифры)
 # ---------------------
 def normalize_phone(phone: str) -> str:
     digits = "".join(ch for ch in (phone or "") if ch.isdigit())
     if len(digits) == 11 and digits.startswith("8"):
-        # 8XXXXXXXXXX -> 7XXXXXXXXXX
         digits = "7" + digits[1:]
     if len(digits) == 10:
-        # XXXXXXXXXX -> 7XXXXXXXXXX
         digits = "7" + digits
     return digits
 
@@ -71,7 +68,6 @@ class EmployeeLoginRequest(BaseModel):
 def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     norm_phone = normalize_phone(data.phone)
 
-    # проверим коллизии по нормализованному телефону
     existing = None
     for u in db.query(User).all():
         if normalize_phone(u.phone) == norm_phone:
@@ -84,7 +80,7 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     user = User(
         name=data.name,
         company=data.company,
-        phone=norm_phone,  # сохраняем уже нормализованный
+        phone=norm_phone,
         email=data.email,
         password_hash=hashed,
         terms_accepted_at=data.terms_accepted_at
@@ -93,7 +89,6 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
     db.commit()
     db.refresh(user)
 
-    # бесплатная подписка на 14 дней
     sub = Subscription(
         user_id=user.id,
         type="free",
@@ -112,13 +107,13 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------
-# Единый логин: сначала владелец, потом сотрудник (с нормализацией телефона)
+# Единый логин: сначала владелец, потом сотрудник
 # ---------------------
 @router.post("/login")
 def login_user(data: LoginRequest, db: Session = Depends(get_db)):
     norm_phone = normalize_phone(data.phone)
 
-    # 1) Пытаемся как ВЛАДЕЛЕЦ — ищем по нормализованному совпадению
+    # владелец
     user = None
     for u in db.query(User).all():
         if normalize_phone(u.phone) == norm_phone:
@@ -132,7 +127,7 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         return {"access_token": token, "token_type": "bearer"}
 
-    # 2) Пытаемся как СОТРУДНИК — также по нормализованному совпадению
+    # сотрудник
     emp = None
     for e in db.query(Employee).all():
         if normalize_phone(e.phone) == norm_phone:
@@ -148,12 +143,11 @@ def login_user(data: LoginRequest, db: Session = Depends(get_db)):
         token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
         return {"access_token": token, "token_type": "bearer"}
 
-    # 3) Не подошёл ни владелец, ни сотрудник
     raise HTTPException(status_code=401, detail="Неверный номер или пароль")
 
 
 # ---------------------
-# Логин сотрудника (опционально оставляем)
+# Логин сотрудника (опционально)
 # ---------------------
 @router.post("/employee/login")
 def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
@@ -178,7 +172,7 @@ def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------
-# Зависимость: текущий пользователь
+# Зависимости
 # ---------------------
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -198,10 +192,6 @@ def get_current_user(
         raise HTTPException(status_code=404, detail="Пользователь не найден")
     return user
 
-
-# ---------------------
-# Зависимость: текущий сотрудник
-# ---------------------
 def get_current_employee(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db)
@@ -222,22 +212,14 @@ def get_current_employee(
         raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
     return emp
 
-
-# --- Универсальный резолвер актёра по токену (владелец или сотрудник) ---
 def get_actor(
     token: str = Depends(oauth2_scheme),
     db: Session = Depends(get_db),
 ):
-    """
-    Возвращает словарь:
-      - {"role": "user", "user": <User>, "employee": None}
-      - {"role": "employee", "user": None, "employee": <Employee>}
-    """
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub", "")
 
-        # Сотрудник
         if isinstance(sub, str) and sub.startswith("emp:"):
             emp_id = int(sub.split(":", 1)[1])
             emp = db.query(Employee).filter(Employee.id == emp_id).first()
@@ -247,7 +229,6 @@ def get_actor(
                 raise HTTPException(status_code=403, detail="Учетная запись заблокирована")
             return {"role": "employee", "employee": emp, "user": None}
 
-        # Владелец
         user_id = int(sub)
         user = db.query(User).filter(User.id == user_id).first()
         if not user:
@@ -259,27 +240,42 @@ def get_actor(
 
 
 # ---------------------
-# Профиль текущего пользователя (для фронта /me)
+# Универсальный /me: работает и для владельца, и для сотрудника
 # ---------------------
 @router.get("/me")
 def get_me(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db)
+    actor = Depends(get_actor),
+    db: Session = Depends(get_db),
 ):
-    sub = db.query(Subscription).filter(Subscription.user_id == current_user.id).first()
-    return {
-        "id": current_user.id,
-        "name": current_user.name,
-        "company": current_user.company,
-        "phone": current_user.phone,
-        "email": current_user.email,
-        "terms_accepted_at": current_user.terms_accepted_at,
-        "subscription_end": sub.end_date if sub else None
-    }
+    if actor["role"] == "user":
+        user: User = actor["user"]
+        sub = db.query(Subscription).filter(Subscription.user_id == user.id).first()
+        return {
+            "role": "user",
+            "id": user.id,
+            "name": user.name,
+            "company": user.company,
+            "phone": user.phone,
+            "email": user.email,
+            "terms_accepted_at": user.terms_accepted_at,
+            "subscription_end": sub.end_date if sub else None,
+        }
+    else:
+        emp: Employee = actor["employee"]
+        owner = db.query(User).filter(User.id == emp.owner_id).first()
+        return {
+            "role": "employee",
+            "id": emp.id,
+            "name": emp.name,
+            "phone": emp.phone,
+            "owner_id": emp.owner_id,
+            "owner_name": owner.name if owner else None,
+            "company": owner.company if owner else None,
+        }
 
 
 # ---------------------
-# Обновление профиля (если нужно на экране редактирования)
+# Обновление профиля (для владельца)
 # ---------------------
 @router.put("/me")
 def update_me(
