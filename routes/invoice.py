@@ -3,7 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal
-from models import Invoice, Item, Client, User, Employee
+from models import Invoice, Item, Client, User, Employee, Product
 from pydantic import BaseModel
 from typing import List, Optional
 from datetime import datetime
@@ -51,6 +51,23 @@ def generate_invoice_number(db, client_id: int):
         func.extract('year', Invoice.created_at) == year
     ).scalar() or 0
     return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
+
+# ----------------------
+# Хелпер: upsert товара в номенклатуру владельца
+# ----------------------
+def upsert_product(db: Session, owner_id: int, name: str, price: int):
+    # сравнение по имени без учёта регистра
+    product = db.query(Product).filter(
+        Product.owner_id == owner_id,
+        func.lower(Product.name) == func.lower(name)
+    ).first()
+    if product:
+        # стратегия "последняя цена побеждает"
+        product.price = price
+        product.updated_at = datetime.utcnow()
+    else:
+        product = Product(owner_id=owner_id, name=name, price=price)
+        db.add(product)
 
 # ----------------------
 # POST: создать накладную (владелец или сотрудник)
@@ -103,7 +120,6 @@ def create_invoice(
         paid_amount=invoice.paid_amount or 0,
         created_at=datetime.now(),
         user_id=owner_id,
-        # новые поля продавца:
         seller_employee_id=seller_employee_id,
         seller_name=seller_name,
     )
@@ -111,7 +127,7 @@ def create_invoice(
     db.commit()
     db.refresh(db_invoice)
 
-    # 5. Добавить товары
+    # 5. Добавить товары + апсерт в номенклатуру
     for item in invoice.items:
         db_item = Item(
             invoice_id=db_invoice.id,
@@ -120,10 +136,12 @@ def create_invoice(
             price=item.price
         )
         db.add(db_item)
+        # апдейтим/создаём продукт в единой номенклатуре организации
+        upsert_product(db, owner_id=owner_id, name=item.name, price=item.price)
 
     db.commit()
 
-    # 6. Ответ (как раньше, но с seller_*)
+    # 6. Ответ
     return {
         "message": "Invoice created",
         "invoice_id": db_invoice.id,
@@ -137,13 +155,11 @@ def create_invoice(
 # ----------------------
 def _list_invoices(db: Session, actor, seller_employee_id: Optional[int]):
     if actor["role"] == "user":
-        # Все накладные владельца (опционально — фильтр по конкретному сотруднику)
         q = db.query(Invoice).filter(Invoice.user_id == actor["user"].id)
         if seller_employee_id is not None:
             q = q.filter(Invoice.seller_employee_id == seller_employee_id)
         invoices = q.all()
     else:
-        # Только накладные, выписанные этим сотрудником
         emp: Employee = actor["employee"]
         invoices = db.query(Invoice).filter(
             Invoice.user_id == emp.owner_id,
@@ -169,9 +185,6 @@ def _list_invoices(db: Session, actor, seller_employee_id: Optional[int]):
         })
     return result
 
-# ----------------------
-# GET: список накладных (со слэшем)
-# ----------------------
 @router.get("/invoices/")
 def get_invoices_slash(
     db: Session = Depends(get_db),
@@ -180,9 +193,6 @@ def get_invoices_slash(
 ):
     return _list_invoices(db, actor, seller_employee_id)
 
-# ----------------------
-# GET: список накладных (без слэша) — чтобы избежать 307 редиректов
-# ----------------------
 @router.get("/invoices")
 def get_invoices_no_slash(
     db: Session = Depends(get_db),
@@ -202,7 +212,6 @@ def public_invoice_page(invoice_id: int):
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    # Показать «Поставщик»: если есть supplier_name — возьмём его, иначе client
     supplier = getattr(invoice, "supplier_name", None)
     if not supplier:
         supplier = getattr(invoice, "client", "—")
