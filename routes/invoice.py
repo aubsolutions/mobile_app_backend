@@ -78,78 +78,72 @@ def create_invoice(
     db: Session = Depends(get_db),
     actor = Depends(get_actor),
 ):
-    """
-    Если создаёт владелец:
-      - user_id = id владельца
-      - seller_employee_id = None
-      - seller_name = имя владельца
+    try:
+        # 1. Найти/создать клиента
+        client = db.query(Client).filter_by(phone=invoice.phone).first()
+        if not client:
+            client = Client(name=invoice.client, phone=invoice.phone)
+            db.add(client)
+            db.commit()
+            db.refresh(client)
 
-    Если создаёт сотрудник:
-      - user_id = owner_id сотрудника (накладная принадлежит владельцу)
-      - seller_employee_id = id сотрудника
-      - seller_name = имя сотрудника
-    """
-    # 1. Найти/создать клиента
-    client = db.query(Client).filter_by(phone=invoice.phone).first()
-    if not client:
-        client = Client(name=invoice.client, phone=invoice.phone)
-        db.add(client)
-        db.commit()
-        db.refresh(client)
+        # 2. Сгенерировать номер накладной
+        invoice_number = generate_invoice_number(db, client.id)
 
-    # 2. Сгенерировать номер накладной
-    invoice_number = generate_invoice_number(db, client.id)
+        # 3. Определить владельца и продавца
+        if actor["role"] == "user":
+            owner_id = actor["user"].id
+            seller_employee_id = None
+            seller_name = actor["user"].name
+        else:
+            emp: Employee = actor["employee"]
+            owner_id = emp.owner_id
+            seller_employee_id = emp.id
+            seller_name = emp.name
 
-    # 3. Определить владельца и продавца
-    if actor["role"] == "user":
-        owner_id = actor["user"].id
-        seller_employee_id = None
-        seller_name = actor["user"].name
-    else:
-        emp: Employee = actor["employee"]
-        owner_id = emp.owner_id
-        seller_employee_id = emp.id
-        seller_name = emp.name
-
-    # 4. Создать накладную
-    db_invoice = Invoice(
-        client=invoice.client,
-        client_id=client.id,
-        invoice_number=invoice_number,
-        status=invoice.status,
-        paid_amount=invoice.paid_amount or 0,
-        created_at=datetime.now(),
-        user_id=owner_id,
-        seller_employee_id=seller_employee_id,
-        seller_name=seller_name,
-    )
-    db.add(db_invoice)
-    db.commit()
-    db.refresh(db_invoice)
-
-    # 5. Добавить товары + апсерт в номенклатуру
-    for item in invoice.items:
-        db_item = Item(
-            invoice_id=db_invoice.id,
-            name=item.name,
-            quantity=item.quantity,
-            price=item.price
+        # 4. Создать накладную
+        db_invoice = Invoice(
+            client=invoice.client,
+            client_id=client.id,
+            invoice_number=invoice_number,
+            status=invoice.status,
+            paid_amount=invoice.paid_amount or 0,
+            created_at=datetime.now(),
+            user_id=owner_id,
+            seller_employee_id=seller_employee_id,
+            seller_name=seller_name,
         )
-        db.add(db_item)
-        # апдейтим/создаём продукт в единой номенклатуре организации
-        upsert_product(db, owner_id=owner_id, name=item.name, price=item.price)
+        db.add(db_invoice)
+        db.commit()
+        db.refresh(db_invoice)
 
-    db.commit()
+        # 5. Добавить товары
+        for item in invoice.items:
+            db_item = Item(
+                invoice_id=db_invoice.id,
+                name=item.name,
+                quantity=item.quantity,
+                price=item.price
+            )
+            db.add(db_item)
 
-    # 6. Ответ
-    return {
-        "message": "Invoice created",
-        "invoice_id": db_invoice.id,
-        "invoice_number": db_invoice.invoice_number,
-        "seller_employee_id": db_invoice.seller_employee_id,
-        "seller_name": db_invoice.seller_name,
-    }
+        db.commit()
 
+        # 6. Ответ
+        return {
+            "message": "Invoice created",
+            "invoice_id": db_invoice.id,
+            "invoice_number": db_invoice.invoice_number,
+            "seller_employee_id": db_invoice.seller_employee_id,
+            "seller_name": db_invoice.seller_name,
+        }
+
+    except Exception as e:
+        db.rollback()
+        # чтобы в логах увидеть стек
+        import traceback; traceback.print_exc()
+        # и отдать фронту внятный текст
+        raise HTTPException(status_code=500, detail=f"Ошибка сохранения накладной: {e}")
 # ----------------------
 # Вспомогательная функция: список накладных
 # ----------------------
