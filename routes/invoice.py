@@ -56,18 +56,28 @@ def generate_invoice_number(db, client_id: int):
 # Хелпер: upsert товара в номенклатуру владельца
 # ----------------------
 def upsert_product(db: Session, owner_id: int, name: str, price: int):
-    # сравнение по имени без учёта регистра
+    name = (name or "").strip()
+    if not name:
+        return
+    # важно: в таблице products колонка user_id, а не owner_id
     product = db.query(Product).filter(
-        Product.owner_id == owner_id,
-        func.lower(Product.name) == func.lower(name)
+        Product.user_id == owner_id,
+        func.lower(Product.name) == name.lower()
     ).first()
     if product:
         # стратегия "последняя цена побеждает"
         product.price = price
-        product.updated_at = datetime.utcnow()
+        # если в модели есть updated_at — обновим
+        if hasattr(product, "updated_at"):
+            product.updated_at = datetime.utcnow()
     else:
-        product = Product(owner_id=owner_id, name=name, price=price)
-        db.add(product)
+        kwargs = dict(user_id=owner_id, name=name, price=price)
+        # если в модели есть поля дат — проставим
+        if hasattr(Product, "created_at"):
+            kwargs["created_at"] = datetime.utcnow()
+        if hasattr(Product, "updated_at"):
+            kwargs["updated_at"] = datetime.utcnow()
+        db.add(Product(**kwargs))
 
 # ----------------------
 # POST: создать накладную (владелец или сотрудник)
@@ -117,7 +127,7 @@ def create_invoice(
         db.commit()
         db.refresh(db_invoice)
 
-        # 5. Добавить товары
+        # 5. Добавить товары + попутно апсертить номенклатуру
         for item in invoice.items:
             db_item = Item(
                 invoice_id=db_invoice.id,
@@ -126,7 +136,10 @@ def create_invoice(
                 price=item.price
             )
             db.add(db_item)
+            # апсерт товара в справочник организации
+            upsert_product(db, owner_id, item.name, item.price)
 
+        # один общий коммит на все позиции и апсерты
         db.commit()
 
         # 6. Ответ
@@ -140,10 +153,9 @@ def create_invoice(
 
     except Exception as e:
         db.rollback()
-        # чтобы в логах увидеть стек
         import traceback; traceback.print_exc()
-        # и отдать фронту внятный текст
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения накладной: {e}")
+
 # ----------------------
 # Вспомогательная функция: список накладных
 # ----------------------
