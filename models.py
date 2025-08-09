@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, UniqueConstraint
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -18,15 +18,13 @@ class Invoice(Base):
     invoice_number = Column(String, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    # 👇 Новые поля: кто оформил накладную (владелец или сотрудник)
+    # 👇 кто оформил накладную (владелец или сотрудник)
     seller_employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
     seller_name = Column(String, nullable=True)
 
     client_rel = relationship("Client", back_populates="invoices")
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
     user = relationship("User", back_populates="invoices")
-
-    # не обязательно, но удобно, если где-то захочешь вытаскивать объект сотрудника
     seller_employee = relationship("Employee", foreign_keys=[seller_employee_id])
 
 class Item(Base):
@@ -101,3 +99,19 @@ class Employee(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
 
     owner = relationship("User", back_populates="employees")
+
+# 👇 НОВАЯ таблица: Номенклатура (единая на организацию/владельца)
+class Product(Base):
+    __tablename__ = "products"
+    __table_args__ = (
+        UniqueConstraint('user_id', 'name', name='uq_products_owner_name'),
+    )
+
+    id = Column(Integer, primary_key=True, index=True)
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # владелец
+    name = Column(String, nullable=False)
+    last_price = Column(Integer, nullable=False, default=0)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow)
+
+    owner = relationship("User")

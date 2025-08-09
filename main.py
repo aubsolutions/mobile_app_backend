@@ -7,6 +7,7 @@ from database import engine
 from models import Base
 from routes import invoice, auth
 from routes import employees
+from routes import products
 from routes.employees import router as employees_router
 
 # 👇 Кастомный JSON-ответ с поддержкой кириллицы
@@ -42,6 +43,7 @@ app.include_router(invoice.router)
 app.include_router(auth.router)
 app.include_router(feedback.router)
 app.include_router(employees.router)
+app.include_router(products.router)
 
 # 👇 Проверка, что всё живо
 @app.get("/")
