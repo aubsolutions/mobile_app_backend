@@ -1,4 +1,3 @@
-# routes/invoice.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -12,9 +11,6 @@ from routes.auth import get_actor  # универсальный актёр (вл
 
 router = APIRouter()
 
-# ----------------------
-# Подключение к БД
-# ----------------------
 def get_db():
     db = SessionLocal()
     try:
@@ -22,9 +18,6 @@ def get_db():
     finally:
         db.close()
 
-# ----------------------
-# Pydantic-схемы
-# ----------------------
 class ItemCreate(BaseModel):
     name: str
     quantity: int
@@ -41,9 +34,6 @@ class FeedbackCreate(BaseModel):
     message: str
     name: Optional[str] = None
 
-# ----------------------
-# Генерация номера накладной
-# ----------------------
 def generate_invoice_number(db, client_id: int):
     year = datetime.now().year
     count = db.query(func.count()).select_from(Invoice).filter(
@@ -52,36 +42,28 @@ def generate_invoice_number(db, client_id: int):
     ).scalar() or 0
     return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
 
-# ----------------------
-# Хелпер: upsert товара в номенклатуру владельца
-# ----------------------
-def upsert_product(db: Session, owner_id: int, name: str, price: int):
+# upsert по user_id (НЕ owner_id)
+def upsert_product(db: Session, owner_user_id: int, name: str, price: int):
     name = (name or "").strip()
     if not name:
         return
-    # важно: в таблице products колонка user_id, а не owner_id
     product = db.query(Product).filter(
-        Product.user_id == owner_id,
+        Product.user_id == owner_user_id,
         func.lower(Product.name) == name.lower()
     ).first()
     if product:
-        # стратегия "последняя цена побеждает"
         product.price = price
-        # если в модели есть updated_at — обновим
         if hasattr(product, "updated_at"):
             product.updated_at = datetime.utcnow()
     else:
-        kwargs = dict(user_id=owner_id, name=name, price=price)
-        # если в модели есть поля дат — проставим
-        if hasattr(Product, "created_at"):
-            kwargs["created_at"] = datetime.utcnow()
-        if hasattr(Product, "updated_at"):
-            kwargs["updated_at"] = datetime.utcnow()
-        db.add(Product(**kwargs))
+        db.add(Product(
+            user_id=owner_user_id,
+            name=name,
+            price=price,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+        ))
 
-# ----------------------
-# POST: создать накладную (владелец или сотрудник)
-# ----------------------
 @router.post("/invoices/")
 def create_invoice(
     invoice: InvoiceCreate,
@@ -89,7 +71,6 @@ def create_invoice(
     actor = Depends(get_actor),
 ):
     try:
-        # 1. Найти/создать клиента
         client = db.query(Client).filter_by(phone=invoice.phone).first()
         if not client:
             client = Client(name=invoice.client, phone=invoice.phone)
@@ -97,10 +78,8 @@ def create_invoice(
             db.commit()
             db.refresh(client)
 
-        # 2. Сгенерировать номер накладной
         invoice_number = generate_invoice_number(db, client.id)
 
-        # 3. Определить владельца и продавца
         if actor["role"] == "user":
             owner_id = actor["user"].id
             seller_employee_id = None
@@ -111,7 +90,6 @@ def create_invoice(
             seller_employee_id = emp.id
             seller_name = emp.name
 
-        # 4. Создать накладную
         db_invoice = Invoice(
             client=invoice.client,
             client_id=client.id,
@@ -127,22 +105,18 @@ def create_invoice(
         db.commit()
         db.refresh(db_invoice)
 
-        # 5. Добавить товары + попутно апсертить номенклатуру
         for item in invoice.items:
-            db_item = Item(
+            db.add(Item(
                 invoice_id=db_invoice.id,
                 name=item.name,
                 quantity=item.quantity,
                 price=item.price
-            )
-            db.add(db_item)
-            # апсерт товара в справочник организации
-            upsert_product(db, owner_id, item.name, item.price)
+            ))
+            # апсерт в номенклатуру по user_id
+            upsert_product(db, owner_user_id=owner_id, name=item.name, price=item.price)
 
-        # один общий коммит на все позиции и апсерты
         db.commit()
 
-        # 6. Ответ
         return {
             "message": "Invoice created",
             "invoice_id": db_invoice.id,
@@ -156,9 +130,6 @@ def create_invoice(
         import traceback; traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Ошибка сохранения накладной: {e}")
 
-# ----------------------
-# Вспомогательная функция: список накладных
-# ----------------------
 def _list_invoices(db: Session, actor, seller_employee_id: Optional[int]):
     if actor["role"] == "user":
         q = db.query(Invoice).filter(Invoice.user_id == actor["user"].id)
@@ -207,9 +178,6 @@ def get_invoices_no_slash(
 ):
     return _list_invoices(db, actor, seller_employee_id)
 
-# ----------------------
-# Публичная страница накладной (QR-код)
-# ----------------------
 @router.get("/invoice/{invoice_id}", response_class=HTMLResponse)
 def public_invoice_page(invoice_id: int):
     db = SessionLocal()
@@ -218,10 +186,7 @@ def public_invoice_page(invoice_id: int):
     if not invoice:
         raise HTTPException(status_code=404, detail="Invoice not found")
 
-    supplier = getattr(invoice, "supplier_name", None)
-    if not supplier:
-        supplier = getattr(invoice, "client", "—")
-
+    supplier = getattr(invoice, "supplier_name", None) or getattr(invoice, "client", "—")
     number = getattr(invoice, "invoice_number", invoice.id)
 
     return f"""
