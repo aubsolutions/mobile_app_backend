@@ -20,8 +20,7 @@ SECRET_KEY = "super-secret-key"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24  # 1 день
 
-# Важно: tokenUrl указывает на эндпоинт получения токена (для Swagger).
-# Само декодирование токена универсально и подходит для обоих типов.
+# tokenUrl нужен для Swagger; сам токен подходит и владельцу, и сотруднику
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/login")
 
 
@@ -48,13 +47,8 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class EmployeeLoginRequest(BaseModel):
-    phone: str
-    password: str
-
-
 # ---------------------
-# Регистрация пользователя
+# Регистрация пользователя (владелец)
 # ---------------------
 @router.post("/register/")
 def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
@@ -94,30 +88,53 @@ def register_user(data: RegisterRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------
-# Логин пользователя (владельца)
+# Единый логин (владелец ИЛИ сотрудник)
 # ---------------------
 @router.post("/login")
-def login_user(data: LoginRequest, db: Session = Depends(get_db)):
+def login_any(data: LoginRequest, db: Session = Depends(get_db)):
+    """
+    Пытаемся:
+      1) Владелец (User)
+      2) Сотрудник (Employee)
+    Возвращаем access_token с sub:
+      - user: "<user_id>"
+      - employee: "emp:<employee_id>"
+    """
+    # 1) Владелец
     user = db.query(User).filter(User.phone == data.phone).first()
-    if not user or not pwd_context.verify(data.password, user.password_hash):
-        raise HTTPException(status_code=401, detail="Неверный номер или пароль")
+    if user and pwd_context.verify(data.password, user.password_hash):
+        token_data = {
+            "sub": str(user.id),
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
 
-    token_data = {
-        "sub": str(user.id),
-        "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
-    }
-    token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
-    return {"access_token": token, "token_type": "bearer"}
+    # 2) Сотрудник
+    emp = db.query(Employee).filter(Employee.phone == data.phone).first()
+    if emp and pwd_context.verify(data.password, emp.password_hash):
+        if emp.is_blocked:
+            # Отдельное сообщение, чтобы было понятно пользователю
+            raise HTTPException(status_code=403, detail="Ваша учетная запись заблокирована")
+        token_data = {
+            "sub": f"emp:{emp.id}",
+            "exp": datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES),
+        }
+        token = jwt.encode(token_data, SECRET_KEY, algorithm=ALGORITHM)
+        return {"access_token": token, "token_type": "bearer"}
+
+    # 3) Никто не подошёл
+    raise HTTPException(status_code=401, detail="Неверный номер телефона или пароль")
 
 
 # ---------------------
-# Логин сотрудника
+# (Опционально) Старый логин для сотрудника — оставлен для совместимости
 # ---------------------
 @router.post("/employee/login")
-def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
+def login_employee_legacy(data: LoginRequest, db: Session = Depends(get_db)):
     emp = db.query(Employee).filter(Employee.phone == data.phone).first()
     if not emp or not pwd_context.verify(data.password, emp.password_hash):
-        raise HTTPException(status_code=401, detail="Неверный номер или пароль")
+        raise HTTPException(status_code=401, detail="Неверный номер телефона или пароль")
     if emp.is_blocked:
         raise HTTPException(status_code=403, detail="Ваша учетная запись заблокирована")
 
@@ -130,7 +147,7 @@ def login_employee(data: EmployeeLoginRequest, db: Session = Depends(get_db)):
 
 
 # ---------------------
-# Зависимости
+# Зависимости (guard'ы)
 # ---------------------
 def get_current_user(
     token: str = Depends(oauth2_scheme),
@@ -141,10 +158,13 @@ def get_current_user(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub")
         if sub is None or not str(sub).isdigit():
-            raise ValueError("Not a user token")
+            # Токен валиден, но роль не владелец
+            raise HTTPException(status_code=403, detail="Доступ запрещён: требуется вход как владелец")
         user_id = int(sub)
+    except HTTPException:
+        raise
     except Exception:
-        raise HTTPException(status_code=401, detail="Невалидный токен пользователя")
+        raise HTTPException(status_code=401, detail="Сессия истекла или недействительна. Войдите снова")
 
     user = db.query(User).filter(User.id == user_id).first()
     if not user:
@@ -161,10 +181,12 @@ def get_current_employee(
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
         sub = payload.get("sub", "")
         if not isinstance(sub, str) or not sub.startswith("emp:"):
-            raise ValueError("Not an employee token")
+            raise HTTPException(status_code=403, detail="Доступ запрещён: требуется вход как сотрудник")
         emp_id = int(sub.split(":", 1)[1])
+    except HTTPException:
+        raise
     except Exception:
-        raise HTTPException(status_code=401, detail="Невалидный токен сотрудника")
+        raise HTTPException(status_code=401, detail="Сессия истекла или недействительна. Войдите снова")
 
     emp = db.query(Employee).filter(Employee.id == emp_id).first()
     if not emp:
@@ -206,8 +228,10 @@ def get_actor(
             raise HTTPException(status_code=404, detail="Пользователь не найден")
         return {"role": "user", "employee": None, "user": user}
 
+    except HTTPException:
+        raise
     except Exception:
-        raise HTTPException(status_code=401, detail="Невалидный токен")
+        raise HTTPException(status_code=401, detail="Сессия истекла или недействительна. Войдите снова")
 
 
 # ---------------------
@@ -233,14 +257,15 @@ def get_me(
         }
     else:
         emp: Employee = actor["employee"]
-        # У сотрудника нет подписки и компании (если не храните иначе),
-        # поэтому возвращаем его собственные данные и роль.
+        owner = db.query(User).filter(User.id == emp.owner_id).first()
         return {
             "role": "employee",
             "id": emp.id,
             "name": emp.name,
             "phone": emp.phone,
             "owner_id": emp.owner_id,
+            "owner_name": owner.name if owner else None,
+            "owner_company": owner.company if owner else None,
             "is_blocked": emp.is_blocked,
         }
 
