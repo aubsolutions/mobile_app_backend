@@ -1,124 +1,218 @@
 # routes/products.py
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from typing import List, Optional
-from pydantic import BaseModel
+from typing import Optional, Dict, Any
 
-from database import SessionLocal
+from database import get_db
+from routes.auth import get_actor
 from models import Product, User, Employee
-from routes.auth import get_actor  # определяем владельца по токену
 
-router = APIRouter(prefix="/products", tags=["products"])
+router = APIRouter()
 
-def get_db():
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
 
-# ------- схемы -------
-class ProductCreate(BaseModel):
-    name: str
-    price: int
-
-class ProductUpdate(BaseModel):
-    name: Optional[str] = None
-    price: Optional[int] = None
-
-class ProductOut(BaseModel):
-    id: int
-    name: str
-    price: int
-    class Config:
-        orm_mode = True
-
-def _owner_id_from_actor(actor) -> int:
+# ───────────────────────────────────────────────────────────────────────────────
+# Вспомогательные
+# ───────────────────────────────────────────────────────────────────────────────
+def _owner_id_from_actor(actor: Dict[str, Any]) -> int:
+    """Возвращает owner_id для организации (владелец или владелец сотрудника)."""
     if actor["role"] == "user":
-        return actor["user"].id
-    else:
-        return actor["employee"].owner_id
+        return actor["user"].id  # type: ignore
+    return actor["employee"].owner_id  # type: ignore
 
-# ------- список всех товаров (организации) -------
-@router.get("/", response_model=List[ProductOut])
-def list_products(
-    db: Session = Depends(get_db),
-    actor = Depends(get_actor),
-):
+
+def _normalize_name(name: str) -> str:
+    return (name or "").strip()
+
+
+def _product_to_dict(p: Product) -> Dict[str, Any]:
+    return {"id": p.id, "name": p.name, "price": p.price}
+
+
+def _list_products(db: Session, actor: Dict[str, Any], q: Optional[str]) -> list[Dict[str, Any]]:
     owner_id = _owner_id_from_actor(actor)
-    prods = db.query(Product).filter(Product.owner_id == owner_id).order_by(func.lower(Product.name)).all()
-    return prods
-
-# дублируем без слэша, чтобы не ловить 307
-@router.get("", response_model=List[ProductOut])
-def list_products_noslash(
-    db: Session = Depends(get_db),
-    actor = Depends(get_actor),
-):
-    return list_products(db, actor)  # type: ignore
-
-# ------- поиск по названию (подсказки) -------
-@router.get("/search", response_model=List[ProductOut])
-def search_products(
-    q: str = Query(""),
-    db: Session = Depends(get_db),
-    actor = Depends(get_actor),
-):
-    owner_id = _owner_id_from_actor(actor)
-    query = db.query(Product).filter(Product.owner_id == owner_id)
+    query = db.query(Product).filter(Product.user_id == owner_id)
     if q:
-        query = query.filter(func.lower(Product.name).like(f"%{q.lower()}%"))
-    return query.order_by(func.lower(Product.name)).limit(50).all()
+        q = q.strip()
+        if q:
+            query = query.filter(Product.name.ilike(f"%{q}%"))
+    products = query.order_by(Product.name.asc()).all()
+    return [_product_to_dict(p) for p in products]
 
-# ------- создать вручную -------
-@router.post("/", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
-def create_product(
-    data: ProductCreate,
+
+# ───────────────────────────────────────────────────────────────────────────────
+# GET /products/  — список с поиском
+# ───────────────────────────────────────────────────────────────────────────────
+@router.get("/products/")
+def get_products_slash(
+    q: Optional[str] = Query(None, description="Поиск по названию"),
     db: Session = Depends(get_db),
-    actor = Depends(get_actor),
+    actor=Depends(get_actor),
 ):
-    owner_id = _owner_id_from_actor(actor)
-    # Проверяем уникальность имени в рамках владельца (без учёта регистра)
-    exists = db.query(Product).filter(
-        Product.owner_id == owner_id,
-        func.lower(Product.name) == func.lower(data.name)
-    ).first()
-    if exists:
-        raise HTTPException(status_code=400, detail="Товар с таким названием уже существует")
+    return _list_products(db, actor, q)
 
-    p = Product(owner_id=owner_id, name=data.name.strip(), price=data.price)
+
+# Дубликат без слеша, чтобы не было 307 редиректа
+@router.get("/products")
+def get_products_no_slash(
+    q: Optional[str] = Query(None, description="Поиск по названию"),
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _list_products(db, actor, q)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# POST /products/ — создать (или обновить цену, если товар с тем же именем уже есть)
+# ───────────────────────────────────────────────────────────────────────────────
+from pydantic import BaseModel, Field
+
+
+class ProductCreate(BaseModel):
+    name: str = Field(..., min_length=1)
+    price: int = Field(ge=0)
+
+
+def _create_or_update_product(
+    db: Session, actor: Dict[str, Any], data: ProductCreate
+) -> Dict[str, Any]:
+    owner_id = _owner_id_from_actor(actor)
+    name = _normalize_name(data.name)
+    if not name:
+        raise HTTPException(status_code=400, detail="Название товара не может быть пустым")
+
+    # Ищем по имени без учета регистра в рамках организации
+    existing = (
+        db.query(Product)
+        .filter(
+            Product.user_id == owner_id,
+            func.lower(Product.name) == func.lower(name),
+        )
+        .first()
+    )
+    if existing:
+        # Если уже есть — просто обновим цену (удобно для "добавления вручную" одинакового названия)
+        if existing.price != data.price:
+            existing.price = data.price
+            db.commit()
+            db.refresh(existing)
+        return _product_to_dict(existing)
+
+    # Иначе создаём новый
+    p = Product(user_id=owner_id, name=name, price=data.price)
     db.add(p)
     db.commit()
     db.refresh(p)
-    return p
+    return _product_to_dict(p)
 
-# ------- обновить (название/цену) -------
-@router.put("/{product_id}", response_model=ProductOut)
-def update_product(
-    product_id: int,
-    data: ProductUpdate,
+
+@router.post("/products/")
+def create_product_slash(
+    payload: ProductCreate,
     db: Session = Depends(get_db),
-    actor = Depends(get_actor),
+    actor=Depends(get_actor),
 ):
+    return _create_or_update_product(db, actor, payload)
+
+
+# Дубликат без слеша
+@router.post("/products")
+def create_product_no_slash(
+    payload: ProductCreate,
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _create_or_update_product(db, actor, payload)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# PUT /products/{product_id} — обновить имя/цену
+# ───────────────────────────────────────────────────────────────────────────────
+class ProductUpdate(BaseModel):
+    name: Optional[str] = Field(None, min_length=1)
+    price: Optional[int] = Field(None, ge=0)
+
+
+def _update_product(
+    db: Session, actor: Dict[str, Any], product_id: int, data: ProductUpdate
+) -> Dict[str, Any]:
     owner_id = _owner_id_from_actor(actor)
-    p = db.query(Product).filter(Product.id == product_id, Product.owner_id == owner_id).first()
+    p = db.query(Product).filter(Product.id == product_id, Product.user_id == owner_id).first()
     if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
 
+    # Если меняем название — проверим уникальность внутри организации (без регистра)
     if data.name is not None:
-        # не даём дублировать имена в рамках владельца
-        dup = db.query(Product).filter(
-            Product.owner_id == owner_id,
-            func.lower(Product.name) == func.lower(data.name),
-            Product.id != product_id
-        ).first()
-        if dup:
-            raise HTTPException(status_code=400, detail="Товар с таким названием уже существует")
-        p.name = data.name.strip()
+        new_name = _normalize_name(data.name)
+        if not new_name:
+            raise HTTPException(status_code=400, detail="Название товара не может быть пустым")
+
+        conflict = (
+            db.query(Product)
+            .filter(
+                Product.user_id == owner_id,
+                func.lower(Product.name) == func.lower(new_name),
+                Product.id != product_id,
+            )
+            .first()
+        )
+        if conflict:
+            raise HTTPException(status_code=409, detail="Товар с таким названием уже существует")
+        p.name = new_name
+
     if data.price is not None:
         p.price = data.price
 
     db.commit()
     db.refresh(p)
-    return p
+    return _product_to_dict(p)
+
+
+@router.put("/products/{product_id}")
+def update_product_no_slash(
+    product_id: int,
+    payload: ProductUpdate,
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _update_product(db, actor, product_id, payload)
+
+
+@router.put("/products/{product_id}/")
+def update_product_slash(
+    product_id: int,
+    payload: ProductUpdate,
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _update_product(db, actor, product_id, payload)
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# (Опционально) GET /products/{product_id} — получить по id
+# ───────────────────────────────────────────────────────────────────────────────
+def _get_product(db: Session, actor: Dict[str, Any], product_id: int) -> Dict[str, Any]:
+    owner_id = _owner_id_from_actor(actor)
+    p = db.query(Product).filter(Product.id == product_id, Product.user_id == owner_id).first()
+    if not p:
+        raise HTTPException(status_code=404, detail="Товар не найден")
+    return _product_to_dict(p)
+
+
+@router.get("/products/{product_id}")
+def get_product_no_slash(
+    product_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _get_product(db, actor, product_id)
+
+
+@router.get("/products/{product_id}/")
+def get_product_slash(
+    product_id: int,
+    db: Session = Depends(get_db),
+    actor=Depends(get_actor),
+):
+    return _get_product(db, actor, product_id)
