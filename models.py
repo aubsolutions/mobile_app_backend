@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, UniqueConstraint
+from sqlalchemy import Column, Integer, String, Boolean, ForeignKey, DateTime, func
 from sqlalchemy.orm import relationship
 from sqlalchemy.ext.declarative import declarative_base
 from datetime import datetime
@@ -18,7 +18,7 @@ class Invoice(Base):
     invoice_number = Column(String, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    # 👇 кто оформил накладную (владелец или сотрудник)
+    # кто оформил накладную (владелец или сотрудник)
     seller_employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
     seller_name = Column(String, nullable=True)
 
@@ -26,6 +26,7 @@ class Invoice(Base):
     items = relationship("Item", back_populates="invoice", cascade="all, delete")
     user = relationship("User", back_populates="invoices")
     seller_employee = relationship("Employee", foreign_keys=[seller_employee_id])
+
 
 class Item(Base):
     __tablename__ = "items"
@@ -38,6 +39,7 @@ class Item(Base):
 
     invoice = relationship("Invoice", back_populates="items")
 
+
 class Client(Base):
     __tablename__ = "clients"
 
@@ -46,6 +48,7 @@ class Client(Base):
     phone = Column(String, nullable=False, unique=True)
 
     invoices = relationship("Invoice", back_populates="client_rel")
+
 
 class User(Base):
     __tablename__ = "users"
@@ -65,6 +68,8 @@ class User(Base):
     invoices = relationship("Invoice", back_populates="user")
     subscription = relationship("Subscription", back_populates="user", uselist=False)
     employees = relationship("Employee", back_populates="owner", cascade="all, delete-orphan")
+    products = relationship("Product", back_populates="owner", cascade="all, delete-orphan")
+
 
 class Feedback(Base):
     __tablename__ = "feedbacks"
@@ -77,6 +82,7 @@ class Feedback(Base):
 
     user = relationship("User", backref="feedbacks")
 
+
 class Subscription(Base):
     __tablename__ = "subscriptions"
 
@@ -86,6 +92,7 @@ class Subscription(Base):
     start_date = Column(DateTime, default=datetime.utcnow)
     end_date = Column(DateTime, nullable=True)
     user = relationship("User", back_populates="subscription")
+
 
 class Employee(Base):
     __tablename__ = "employees"
@@ -100,18 +107,15 @@ class Employee(Base):
 
     owner = relationship("User", back_populates="employees")
 
-# 👇 НОВАЯ таблица: Номенклатура (единая на организацию/владельца)
+
 class Product(Base):
     __tablename__ = "products"
-    __table_args__ = (
-        UniqueConstraint('user_id', 'name', name='uq_products_owner_name'),
-    )
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # владелец
+    owner_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
-    last_price = Column(Integer, nullable=False, default=0)
+    price = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
-    updated_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
-    owner = relationship("User")
+    owner = relationship("User", back_populates="products")

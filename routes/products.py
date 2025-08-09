@@ -2,18 +2,23 @@
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 from sqlalchemy import func
-from pydantic import BaseModel
 from typing import List, Optional
+from pydantic import BaseModel
 
-from database import get_db
+from database import SessionLocal
 from models import Product, User, Employee
-from routes.auth import get_actor  # {"role": "user"/"employee", "user"/"employee": obj}
+from routes.auth import get_actor  # определяем владельца по токену
 
 router = APIRouter(prefix="/products", tags=["products"])
 
-# ───────────────────────────────────────────────────────────────────────────────
-# Pydantic
-# ───────────────────────────────────────────────────────────────────────────────
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+# ------- схемы -------
 class ProductCreate(BaseModel):
     name: str
     price: int
@@ -25,44 +30,48 @@ class ProductUpdate(BaseModel):
 class ProductOut(BaseModel):
     id: int
     name: str
-    last_price: int
+    price: int
     class Config:
         orm_mode = True
 
-# ───────────────────────────────────────────────────────────────────────────────
-# helpers
-# ───────────────────────────────────────────────────────────────────────────────
 def _owner_id_from_actor(actor) -> int:
     if actor["role"] == "user":
         return actor["user"].id
     else:
-        emp: Employee = actor["employee"]
-        return emp.owner_id
+        return actor["employee"].owner_id
 
-# ───────────────────────────────────────────────────────────────────────────────
-# GET /products — список с поиском
-# ───────────────────────────────────────────────────────────────────────────────
+# ------- список всех товаров (организации) -------
 @router.get("/", response_model=List[ProductOut])
 def list_products(
-    q: Optional[str] = Query(None, description="Поиск по названию"),
-    limit: int = Query(200, ge=1, le=1000),
-    offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
     actor = Depends(get_actor),
 ):
     owner_id = _owner_id_from_actor(actor)
-    query = db.query(Product).filter(Product.user_id == owner_id)
+    prods = db.query(Product).filter(Product.owner_id == owner_id).order_by(func.lower(Product.name)).all()
+    return prods
 
+# дублируем без слэша, чтобы не ловить 307
+@router.get("", response_model=List[ProductOut])
+def list_products_noslash(
+    db: Session = Depends(get_db),
+    actor = Depends(get_actor),
+):
+    return list_products(db, actor)  # type: ignore
+
+# ------- поиск по названию (подсказки) -------
+@router.get("/search", response_model=List[ProductOut])
+def search_products(
+    q: str = Query(""),
+    db: Session = Depends(get_db),
+    actor = Depends(get_actor),
+):
+    owner_id = _owner_id_from_actor(actor)
+    query = db.query(Product).filter(Product.owner_id == owner_id)
     if q:
-        q_like = f"%{q.lower()}%"
-        query = query.filter(func.lower(Product.name).like(q_like))
+        query = query.filter(func.lower(Product.name).like(f"%{q.lower()}%"))
+    return query.order_by(func.lower(Product.name)).limit(50).all()
 
-    products = query.order_by(Product.name.asc()).offset(offset).limit(limit).all()
-    return products
-
-# ───────────────────────────────────────────────────────────────────────────────
-# POST /products — ручное добавление
-# ───────────────────────────────────────────────────────────────────────────────
+# ------- создать вручную -------
 @router.post("/", response_model=ProductOut, status_code=status.HTTP_201_CREATED)
 def create_product(
     data: ProductCreate,
@@ -70,28 +79,21 @@ def create_product(
     actor = Depends(get_actor),
 ):
     owner_id = _owner_id_from_actor(actor)
-
-    # уникальность имени в рамках владельца
+    # Проверяем уникальность имени в рамках владельца (без учёта регистра)
     exists = db.query(Product).filter(
-        Product.user_id == owner_id,
-        func.lower(Product.name) == func.lower(data.name.strip())
+        Product.owner_id == owner_id,
+        func.lower(Product.name) == func.lower(data.name)
     ).first()
     if exists:
-        raise HTTPException(status_code=400, detail="Такой товар уже есть в номенклатуре")
+        raise HTTPException(status_code=400, detail="Товар с таким названием уже существует")
 
-    prod = Product(
-        user_id=owner_id,
-        name=data.name.strip(),
-        last_price=int(data.price or 0),
-    )
-    db.add(prod)
+    p = Product(owner_id=owner_id, name=data.name.strip(), price=data.price)
+    db.add(p)
     db.commit()
-    db.refresh(prod)
-    return prod
+    db.refresh(p)
+    return p
 
-# ───────────────────────────────────────────────────────────────────────────────
-# PUT /products/{product_id} — изменить имя/цену
-# ───────────────────────────────────────────────────────────────────────────────
+# ------- обновить (название/цену) -------
 @router.put("/{product_id}", response_model=ProductOut)
 def update_product(
     product_id: int,
@@ -100,42 +102,23 @@ def update_product(
     actor = Depends(get_actor),
 ):
     owner_id = _owner_id_from_actor(actor)
-    prod = db.query(Product).filter(Product.id == product_id, Product.user_id == owner_id).first()
-    if not prod:
+    p = db.query(Product).filter(Product.id == product_id, Product.owner_id == owner_id).first()
+    if not p:
         raise HTTPException(status_code=404, detail="Товар не найден")
 
     if data.name is not None:
-        new_name = data.name.strip()
-        # проверим уникальность нового имени
+        # не даём дублировать имена в рамках владельца
         dup = db.query(Product).filter(
-            Product.user_id == owner_id,
-            func.lower(Product.name) == func.lower(new_name),
+            Product.owner_id == owner_id,
+            func.lower(Product.name) == func.lower(data.name),
             Product.id != product_id
         ).first()
         if dup:
             raise HTTPException(status_code=400, detail="Товар с таким названием уже существует")
-        prod.name = new_name
-
+        p.name = data.name.strip()
     if data.price is not None:
-        prod.last_price = int(data.price)
+        p.price = data.price
 
-    prod.updated_at = func.now()
     db.commit()
-    db.refresh(prod)
-    return prod
-
-# ───────────────────────────────────────────────────────────────────────────────
-# DELETE /products/{product_id} — (опционально)
-# ───────────────────────────────────────────────────────────────────────────────
-@router.delete("/{product_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_product(
-    product_id: int,
-    db: Session = Depends(get_db),
-    actor = Depends(get_actor),
-):
-    owner_id = _owner_id_from_actor(actor)
-    prod = db.query(Product).filter(Product.id == product_id, Product.user_id == owner_id).first()
-    if not prod:
-        raise HTTPException(status_code=404, detail="Товар не найден")
-    db.delete(prod)
-    db.commit()
+    db.refresh(p)
+    return p
