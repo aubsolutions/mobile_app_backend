@@ -18,7 +18,6 @@ class Invoice(Base):
     invoice_number = Column(String, unique=True, index=True)
     user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
 
-    # кто оформил накладную (владелец или сотрудник)
     seller_employee_id = Column(Integer, ForeignKey("employees.id", ondelete="SET NULL"), nullable=True)
     seller_name = Column(String, nullable=True)
 
@@ -101,15 +100,24 @@ class Employee(Base):
 
     owner = relationship("User", back_populates="employees")
 
-# 👇 ЕДИНАЯ НОМЕНКЛАТУРА ОРГАНИЗАЦИИ
+# ЕДИНАЯ НОМЕНКЛАТУРА ОРГАНИЗАЦИИ
 class Product(Base):
     __tablename__ = "products"
 
     id = Column(Integer, primary_key=True, index=True)
-    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)  # ВАЖНО: user_id
+    user_id = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
     name = Column(String, nullable=False)
-    price = Column(Integer, nullable=False, default=0)
+    # В БД колонка называется last_price — мэппим её и даём совместимый алиас .price
+    last_price = Column(Integer, nullable=False, default=0)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow)
 
     user = relationship("User", back_populates="products")
+
+    @property
+    def price(self) -> int:
+        return self.last_price
+
+    @price.setter
+    def price(self, value: int):
+        self.last_price = value

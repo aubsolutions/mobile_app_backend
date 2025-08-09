@@ -6,7 +6,7 @@ from typing import List, Optional
 from pydantic import BaseModel
 
 from database import get_db
-from models import Product, User, Employee
+from models import Product, Employee
 from routes.auth import get_actor  # {"role": "user"/"employee", ...}
 
 router = APIRouter(prefix="/products", tags=["products"])
@@ -23,7 +23,6 @@ class ProductOut(BaseModel):
         orm_mode = True
 
 def _owner_user_id(actor) -> int:
-    """Единый владелец-юзер: для владельца это его id, для сотрудника — owner_id."""
     if actor["role"] == "user":
         return actor["user"].id
     else:
@@ -37,12 +36,12 @@ def list_products(
     actor = Depends(get_actor),
 ):
     owner_id = _owner_user_id(actor)
-    qs = db.query(Product).filter(Product.user_id == owner_id)   # <-- user_id!
+    qs = db.query(Product).filter(Product.user_id == owner_id)
     if q:
         qs = qs.filter(func.lower(Product.name).contains(q.lower()))
+    # thanks to @property price, orm_mode вернёт поле price из last_price
     return qs.order_by(func.lower(Product.name)).all()
 
-# поддержка без слэша, чтобы не было 307
 @router.get("", response_model=List[ProductOut])
 def list_products_no_slash(
     q: Optional[str] = Query(None),
@@ -59,12 +58,17 @@ def create_product(
 ):
     owner_id = _owner_user_id(actor)
     existing = db.query(Product).filter(
-        Product.user_id == owner_id,                               # <-- user_id!
+        Product.user_id == owner_id,
         func.lower(Product.name) == data.name.lower()
     ).first()
     if existing:
         raise HTTPException(status_code=400, detail="Такой товар уже существует")
-    prod = Product(user_id=owner_id, name=data.name.strip(), price=data.price)
+
+    prod = Product(
+        user_id=owner_id,
+        name=data.name.strip(),
+        last_price=data.price,  # <— важно
+    )
     db.add(prod)
     db.commit()
     db.refresh(prod)
@@ -80,12 +84,11 @@ def update_product(
     owner_id = _owner_user_id(actor)
     prod = db.query(Product).filter(
         Product.id == product_id,
-        Product.user_id == owner_id                                # <-- user_id!
+        Product.user_id == owner_id
     ).first()
     if not prod:
         raise HTTPException(status_code=404, detail="Товар не найден")
 
-    # проверим дубль по имени
     dup = db.query(Product).filter(
         Product.user_id == owner_id,
         func.lower(Product.name) == data.name.lower(),
@@ -95,7 +98,8 @@ def update_product(
         raise HTTPException(status_code=400, detail="Товар с таким названием уже есть")
 
     prod.name = data.name.strip()
-    prod.price = data.price
+    prod.last_price = data.price  # <— важно
+    prod.updated_at = func.now()
     db.commit()
     db.refresh(prod)
     return prod

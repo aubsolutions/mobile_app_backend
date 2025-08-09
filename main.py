@@ -7,18 +7,14 @@ from database import engine
 from models import Base
 from routes import invoice, auth
 from routes import employees
-from routes import products
-from routes.employees import router as employees_router
-from routes import products
+from routes import products  # один корректный импорт
 
 # 👇 Кастомный JSON-ответ с поддержкой кириллицы
 class UTF8JSONResponse(StarletteJSONResponse):
     media_type = "application/json; charset=utf-8"
 
-# 👇 Инициализация FastAPI
 app = FastAPI(default_response_class=UTF8JSONResponse)
 
-# 👇 Глобальный обработчик ошибок — чтобы не было кракозябр в ответах
 @app.exception_handler(HTTPException)
 async def custom_http_exception_handler(request: Request, exc: HTTPException):
     return JSONResponse(
@@ -27,28 +23,22 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
         media_type="application/json; charset=utf-8",
     )
 
-# 👇 Создание таблиц
 Base.metadata.create_all(bind=engine)
 
-# 👇 CORS (разрешить доступ отовсюду)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # ⚠️ Укажи домен на проде
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# 👇 Подключение роутов
 app.include_router(invoice.router)
 app.include_router(auth.router)
 app.include_router(feedback.router)
 app.include_router(employees.router)
 app.include_router(products.router)
 
-
-# 👇 Проверка, что всё живо
 @app.get("/")
 def health():
     return {"status": "ok"}
-

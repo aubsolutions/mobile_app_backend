@@ -1,13 +1,14 @@
+# routes/invoice.py
 from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 from database import SessionLocal
-from models import Invoice, Item, Client, User, Employee, Product
+from models import Invoice, Item, Client, Employee, Product
 from pydantic import BaseModel
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timezone
 from fastapi.responses import HTMLResponse
-from routes.auth import get_actor  # универсальный актёр (владелец/сотрудник)
+from routes.auth import get_actor
 
 router = APIRouter()
 
@@ -42,7 +43,7 @@ def generate_invoice_number(db, client_id: int):
     ).scalar() or 0
     return f"№{str(client_id).zfill(4)}/{year}/{count + 1}"
 
-# upsert по user_id (НЕ owner_id)
+# upsert в номенклатуру по user_id, учитываем last_price
 def upsert_product(db: Session, owner_user_id: int, name: str, price: int):
     name = (name or "").strip()
     if not name:
@@ -52,14 +53,13 @@ def upsert_product(db: Session, owner_user_id: int, name: str, price: int):
         func.lower(Product.name) == name.lower()
     ).first()
     if product:
-        product.price = price
-        if hasattr(product, "updated_at"):
-            product.updated_at = datetime.utcnow()
+        product.last_price = price
+        product.updated_at = datetime.utcnow()
     else:
         db.add(Product(
             user_id=owner_user_id,
             name=name,
-            price=price,
+            last_price=price,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
         ))
@@ -96,7 +96,7 @@ def create_invoice(
             invoice_number=invoice_number,
             status=invoice.status,
             paid_amount=invoice.paid_amount or 0,
-            created_at=datetime.now(),
+            created_at=datetime.utcnow(),   # <— UTC
             user_id=owner_id,
             seller_employee_id=seller_employee_id,
             seller_name=seller_name,
@@ -112,7 +112,6 @@ def create_invoice(
                 quantity=item.quantity,
                 price=item.price
             ))
-            # апсерт в номенклатуру по user_id
             upsert_product(db, owner_user_id=owner_id, name=item.name, price=item.price)
 
         db.commit()
@@ -145,13 +144,18 @@ def _list_invoices(db: Session, actor, seller_employee_id: Optional[int]):
 
     result = []
     for inv in invoices:
+        # помечаем как UTC, чтобы фронт корректно toLocal()
+        created_iso = None
+        if inv.created_at:
+            created_iso = inv.created_at.replace(tzinfo=timezone.utc).isoformat()
+
         result.append({
             "id": inv.id,
             "client": inv.client,
             "phone": inv.client_rel.phone if inv.client_rel else None,
             "status": inv.status,
             "paid_amount": inv.paid_amount,
-            "created_at": inv.created_at.isoformat() if inv.created_at else None,
+            "created_at": created_iso,
             "invoice_number": inv.invoice_number,
             "seller_employee_id": getattr(inv, "seller_employee_id", None),
             "seller_name": getattr(inv, "seller_name", None),
