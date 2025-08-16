@@ -3,22 +3,30 @@ from celery_app import celery
 from database import SessionLocal
 from models import Subscription
 from datetime import datetime, timedelta
+from celery.utils.log import get_task_logger
+
+logger = get_task_logger(__name__)
 
 @celery.task
 def check_subscriptions():
     db = SessionLocal()
-    now = datetime.utcnow()
-    cutoff = now + timedelta(days=3)
+    try:
+        now = datetime.utcnow()
+        cutoff = now + timedelta(days=3)
 
-    expiring = (
-        db.query(Subscription)
-          .filter(Subscription.end_date <= cutoff,
-                  Subscription.end_date >= now)
-          .all()
-    )
+        expiring = (
+            db.query(Subscription)
+              .filter(Subscription.end_date <= cutoff,
+                      Subscription.end_date >= now)
+              .all()
+        )
 
-    for sub in expiring:
-        # Здесь будет реальный send_push/sub.notify(...)
-        print(f"Напоминание: подписка user_id={sub.user_id} истекает {sub.end_date.date()}")
+        logger.info("Проверка подписок: найдено %d истекающих в окне %s → %s",
+                    len(expiring), now, cutoff)
 
-    db.close()
+        for sub in expiring:
+            logger.info("Напоминание: user_id=%s истекает %s",
+                        sub.user_id, sub.end_date.date())
+
+    finally:
+        db.close()
